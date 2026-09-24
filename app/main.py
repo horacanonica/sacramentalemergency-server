@@ -60,6 +60,12 @@ def main() -> None:
         sms_driver=rc_driver,
         numbers_provider=_alert_cells,
     )
+    if rotation.recovered_from_damage:
+        notifier.alert(
+            "The bot's saved data was damaged (most likely by a power cut) and was "
+            "restored automatically from the save before it. The last change made "
+            "just before the power went out may be missing. Text STATUS to check the order."
+        )
     if rotation.recover_interrupted_audit():
         logger.warning("Rolled back an interrupted Monday self-audit and restoring the ring.")
         try:

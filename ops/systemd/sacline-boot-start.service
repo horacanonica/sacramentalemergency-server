@@ -1,0 +1,14 @@
+[Unit]
+Description=Sacramental Line: at boot, start the bot if it was left stopped (e.g. power cut mid signal-cli update)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+Before=sacline-signal-update.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/sacline/boot_start.sh
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

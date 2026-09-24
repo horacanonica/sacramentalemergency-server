@@ -15,7 +15,8 @@
 #      automatic reboot at midnight only when an update needs one.
 #   3. systemd timers: backup 2:30 AM nightly, watchdog every 5 minutes,
 #      signal-cli version check Tuesdays 10 AM (the bot asks the priests
-#      Y/N only when a newer version exists; Y installs it automatically).
+#      Y/N only when a newer version exists; Y installs it automatically),
+#      and a boot-time check that starts the bot if it was left stopped.
 
 set -euo pipefail
 
@@ -141,9 +142,12 @@ install -m 755 "$OPS/watchdog.py" "$LIB/watchdog.py"
 install -m 644 "$OPS/send_alert.py" "$LIB/send_alert.py"
 install -m 755 "$OPS/signal_update_check.py" "$LIB/signal_update_check.py"
 install -m 755 "$OPS/signal_update.sh" "$LIB/signal_update.sh"
+install -m 755 "$OPS/boot_start.sh" "$LIB/boot_start.sh"
 install -m 644 "$OPS"/systemd/sacline-*.service "$OPS"/systemd/sacline-*.timer "$OPS"/systemd/sacline-*.path /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now sacline-watchdog.timer >/dev/null
+# At every boot: start the bot if a power cut left it stopped (runs next boot).
+systemctl enable sacline-boot-start.service >/dev/null
 # Weekly signal-cli check (Tue 10 AM; silent unless there's a new version)
 # and the Y-answer trigger for the automatic update.
 systemctl enable --now sacline-signal-check.timer sacline-signal-update.path sacline-signal-update.timer >/dev/null

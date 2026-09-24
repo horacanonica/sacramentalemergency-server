@@ -29,6 +29,13 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
   RingCentral SMS), unattended-upgrades with midnight auto-reboot. Installed
   to `/usr/local/lib/sacline` + systemd timers by `sudo ops/install.sh`;
   re-run it after editing anything in `ops/`. Restore guide: `ops/RESTORE.md`.
+- Power cuts (24 Sep 2026): `state.json` saves are fsynced and keep the
+  previous version as `state.json.bak`; an unreadable `state.json` falls back
+  to it at load and `app/main.py` alerts the priests (`recovered_from_damage`).
+  `ops/boot_start.sh` (sacline-boot-start.service, every boot) starts the bot
+  if it was left stopped and closes out a signal-cli update the restart cut
+  off (puts the Dockerfile pin + image tag back if still on the old version).
+  BIOS is set to power on when AC returns (tested 24 Sep 2026).
 - signal-cli updates: `ops/signal_update_check.py` (Tue 10 AM) writes
   `data/signal-update-offer.json` only when a newer release exists (silent
   otherwise). `app/signal_update.py` asks unmuted priests Y/N (5 AM–9 PM, only
@@ -83,7 +90,7 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 docker compose up -d --build
 ```
 
-Tests (from a venv with pytest): `pytest -q` — 183 passing as of 24 Sep 2026.
+Tests (from a venv with pytest): `pytest -q` — 199 passing as of 24 Sep 2026.
 
 Check which RingCentral backend the account is on before debugging any
 write failure:

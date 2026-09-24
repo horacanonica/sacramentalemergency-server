@@ -105,6 +105,13 @@ When you're done: `sudo umount /mnt/sacline-backup && sudo cryptsetup close sacl
 
 ## Restoring just one file (the server is fine, a file got damaged)
 
+`data/state.json` usually repairs itself: every save keeps the previous
+version as `data/state.json.bak`, and if `state.json` is unreadable at
+startup (e.g. after a power cut) the bot uses the `.bak`, keeps the damaged
+file as `state.json.damaged-<date>`, and texts the priests to check the
+order. The steps below are for when both copies are bad (the bot won't
+start and its log says so), or for any other file.
+
 ```bash
 sudo systemctl stop sacline-backup.timer      # keep the nightly job from interrupting
 sudo cryptsetup open --key-file /etc/sacline/usb-backup.key /dev/disk/by-label/SACLINE-BACKUP sacline-backup

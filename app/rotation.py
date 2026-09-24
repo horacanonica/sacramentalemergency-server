@@ -49,6 +49,8 @@ from __future__ import annotations
 
 import calendar
 import json
+import logging
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -62,6 +64,9 @@ from app.localtime import (
     effective_ring_date,
     week_monday,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class RotationError(Exception):
@@ -132,6 +137,14 @@ def next_recollection_date(ordinal: int, after: date) -> date:
             year += 1
 
 
+def _read_json_object(path: Path) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        state = json.load(f)
+    if not isinstance(state, dict):
+        raise ValueError(f"{path.name} does not hold a JSON object")
+    return state
+
+
 # Removed with visit counting (24 Sep 2026): state keys and history entry
 # types that only carried counts. Deleted from state.json on first load.
 _REMOVED_COUNT_KEYS = ("call_counts", "people_counts", "rounds", "rotate_at", "anointing_log")
@@ -168,6 +181,9 @@ class RotationManager:
     _cover_prompts_sent: dict[str, str] = field(default_factory=dict, init=False)
     _failsafe_active: bool = field(default=False, init=False)
     _signal_down_alerted: bool = field(default=False, init=False)
+    # Set when state.json was unreadable and the previous save was used
+    # instead: the name the damaged file was kept under (see _read_state).
+    recovered_from_damage: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,9 +204,8 @@ class RotationManager:
         priests = load_priests(self.config_path)
         active_ids = [p["id"] for p in priests if p.get("active", True)]
 
-        if self.state_path.exists():
-            with open(self.state_path, "r", encoding="utf-8") as f:
-                state = json.load(f)
+        state = self._read_state()
+        if state is not None:
             saved_order = state.get("order", [])
             # Preserve saved order for ids that still exist and are
             # active; append any newly-active ids not yet in the order;
@@ -290,10 +305,73 @@ class RotationManager:
             "failsafe_active": self._failsafe_active,
             "signal_down_alerted": self._signal_down_alerted,
         }
+        self._write_state(state)
+
+    def _backup_path(self) -> Path:
+        return self.state_path.with_suffix(".json.bak")
+
+    def _read_state(self) -> dict[str, Any] | None:
+        """The saved state, or None on a first run (no files yet).
+
+        If a power cut left state.json empty or half-written, fall back to
+        state.json.bak (the version before the last save), keep the damaged
+        file for inspection, and write the recovered state back. At most
+        the last change is lost. Raises only when neither copy is readable:
+        starting over from a blank state could ring the wrong priests."""
+        backup = self._backup_path()
+        if not self.state_path.exists() and not backup.exists():
+            return None
+        try:
+            return _read_json_object(self.state_path)
+        except (OSError, ValueError) as exc:
+            primary_error = exc
+        try:
+            state = _read_json_object(backup)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"{self.state_path.name} is unreadable ({primary_error}) and so is "
+                f"{backup.name} ({exc}); restore data/ from the nightly backup (ops/RESTORE.md)"
+            ) from primary_error
+        damaged = None
+        if self.state_path.exists():
+            damaged = self.state_path.with_name(
+                f"{self.state_path.name}.damaged-{datetime.now():%Y%m%d-%H%M%S}"
+            )
+            self.state_path.replace(damaged)
+        self.recovered_from_damage = damaged.name if damaged else f"{self.state_path.name} (missing)"
+        logger.error(
+            "%s was unreadable (%s); recovered from %s. Damaged file kept as %s.",
+            self.state_path.name, primary_error, backup.name, self.recovered_from_damage,
+        )
+        # The backup is the good copy here: don't replace it with the damaged file.
+        self._write_state(state, rotate_backup=False)
+        return state
+
+    def _write_state(self, state: dict[str, Any], rotate_backup: bool = True) -> None:
+        """Write state.json so a power cut at any moment leaves a readable
+        state.json, with the previous version kept as state.json.bak."""
         tmp_path = self.state_path.with_suffix(".json.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # data on disk before the rename below makes it live
+        if rotate_backup and self.state_path.exists():
+            # Hard link, so state.json.bak becomes the current (soon previous)
+            # file without copying it. Best effort: a missed backup must never
+            # block saving the state itself.
+            bak_tmp = self.state_path.with_suffix(".json.bak.tmp")
+            try:
+                bak_tmp.unlink(missing_ok=True)
+                os.link(self.state_path, bak_tmp)
+                bak_tmp.replace(self._backup_path())
+            except OSError:
+                logger.warning("Could not update %s", self._backup_path().name, exc_info=True)
         tmp_path.replace(self.state_path)  # atomic on POSIX
+        dir_fd = os.open(self.state_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)  # make the rename itself survive a power cut
+        finally:
+            os.close(dir_fd)
 
     def _priests_by_id(self) -> dict[str, dict[str, Any]]:
         return {p["id"]: p for p in load_priests(self.config_path)}
