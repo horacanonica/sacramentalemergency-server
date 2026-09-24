@@ -1,0 +1,8 @@
+[Unit]
+Description=Sacramental Line: weekly check for a newer signal-cli (offers Y/N to priests only if there is one)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/sacline/signal_update_check.py

@@ -1,0 +1,25 @@
+# Single command to stand this whole system up on a fresh machine:
+#   docker compose up -d --build
+#
+# Everything that must survive a container rebuild (rotation state,
+# history log, signal-cli's linked-device registration) lives under
+# ./data and ./signal-cli-data, which are bind-mounted so they live on
+# the host, not just inside the container.
+
+services:
+  rotation-app:
+    build: .
+    image: sacramental-line-rotation:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # OS / log clock. App calendar math is hardcoded to California
+      # (America/Los_Angeles) in app/localtime.py — not read from env.
+      TZ: America/Los_Angeles
+    volumes:
+      - ./data:/app/data
+      - ./signal-cli-data:/app/signal-cli-data
+      - ./config:/app/config
+    ports:
+      - "${TAILSCALE_IP:?set TAILSCALE_IP in .env to this host's Tailscale IP}:8420:8420"   # web dashboard, Tailscale-only (not 0.0.0.0) - see docs/MIGRATION.md before moving hosts

@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly signal-cli version check (Tuesday 10 AM)
+
+[Timer]
+OnCalendar=Tue *-*-* 10:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

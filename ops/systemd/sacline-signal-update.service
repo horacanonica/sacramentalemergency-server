@@ -1,0 +1,9 @@
+[Unit]
+Description=Sacramental Line: install an approved signal-cli update (auto-rollback on failure)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/sacline/signal_update.sh
+TimeoutStartSec=90min

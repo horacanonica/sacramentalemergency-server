@@ -1,0 +1,16 @@
+body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+h1 { margin-bottom: 0.25rem; }
+section { margin: 2rem 0; padding-top: 1rem; border-top: 1px solid #ddd; }
+.banner { padding: 0.75rem 1rem; border-radius: 6px; }
+.banner.warning { background: #fff3cd; border: 1px solid #ffe69c; }
+.banner.ok { background: #d1e7dd; border: 1px solid #a3cfbb; }
+form { margin: 0.75rem 0; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+input { padding: 0.4rem; }
+button { padding: 0.4rem 0.9rem; cursor: pointer; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+.order-list li { margin: 0.25rem 0; }
+.badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.8rem; margin-left: 0.4rem; }
+.badge.unavailable { background: #f8d7da; border: 1px solid #f1aeb5; }
+.badge.scheduled { background: #e2e3e5; border: 1px solid #c9cacb; }
+fieldset { margin: 0.75rem 0; border: 1px solid #ddd; border-radius: 6px; }

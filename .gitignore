@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# --- Private: real credentials, phone numbers, Signal keys, live state ---
+# Never commit these. See config/priests.example.yaml and .env.example.
+.env
+config/priests.yaml
+data/
+signal-cli-data/
+
+# Move/backup archives (contain everything above)
+*.tar.gz
+*.tar.gz.sha256
+
+# Old PDF exports of the guides (contain real names; the .md files are current)
+*.pdf

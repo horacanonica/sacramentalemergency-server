@@ -1,0 +1,8 @@
+[Unit]
+Description=Sacramental Line: health checks, text priests if something stays broken
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/sacline/watchdog.py
+TimeoutStartSec=4min

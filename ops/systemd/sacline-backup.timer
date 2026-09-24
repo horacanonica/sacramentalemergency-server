@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Sacramental Line backup (2:30 AM)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# If the machine was off at 2:30, run soon after it comes back.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

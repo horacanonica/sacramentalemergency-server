@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sacramental Emergency Line — Rotation Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Sacramental Emergency Line</h1>
+    {% if manual_mode %}
+      <p class="banner warning">
+        Manual mode: rotations here update the tracked order and send notifications,
+        but you still need to reorder the ring sequence by hand in the RingCentral
+        Admin Portal (Admin &rarr; User Management &rarr; Sacramental Emergency Line &rarr;
+        Phone &rarr; Incoming Call Rules &rarr; "My Work Day" &rarr; Ring Settings &rarr; Ring in Order).
+      </p>
+    {% else %}
+      <p class="banner ok">API mode: rotations here push directly to RingCentral. No manual step needed.</p>
+    {% endif %}
+    {% if not automation_enabled %}
+      <p class="banner warning">
+        Automatic day-off/vacation/recollection disabling is currently OFF for everyone (toggled via the
+        Signal DISABLE command or the button below). Everyone stays available regardless of their normal
+        schedule until it's turned back on.
+      </p>
+    {% endif %}
+    <form method="post" action="{{ url_for('toggle_automation') }}">
+      <input type="hidden" name="enabled" value="{{ 'false' if automation_enabled else 'true' }}">
+      <button type="submit">{{ "Disable automatic scheduling" if automation_enabled else "Re-enable automatic scheduling" }}</button>
+    </form>
+  </header>
+
+  <section>
+    <h2>Current Order</h2>
+    <ol class="order-list">
+      {% for p in order %}
+        <li><strong>{{ p.name }}</strong> — {{ p.cell_number or "no number set" }}
+          {% if not p.available_today %}
+            <span class="badge unavailable">
+              {% if p.manual_disabled %}disabled
+              {% elif p.vacation %}on vacation until {{ p.vacation.end }}
+              {% elif p.day_of_recollection %}day of recollection today
+              {% elif p.day_off %}day off today
+              {% endif %}
+            </span>
+          {% elif p.day_off or p.vacation or p.day_of_recollection %}
+            <span class="badge scheduled">
+              {% if p.day_off %}day off: {{ p.day_off }}{% endif %}
+              {% if p.day_of_recollection %} · recollection: {{ p.day_of_recollection.ordinal }}{% if p.day_of_recollection.ordinal == 1 %}st{% elif p.day_of_recollection.ordinal == 2 %}nd{% elif p.day_of_recollection.ordinal == 3 %}rd{% else %}th{% endif %} Wed{% endif %}
+              {% if p.vacation %} · vacation {{ p.vacation.start }}–{{ p.vacation.end }}{% endif %}
+            </span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+    <form method="post" action="{{ url_for('do_rotate') }}">
+      <button type="submit">Rotate now (move lead to back)</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Availability</h2>
+    <p>Manual disable, recurring day off, and vacation dates per priest.
+       Changes here can never leave zero priests available on a given day —
+       they'll be rejected with an alert instead.</p>
+    {% for p in order %}
+      <fieldset>
+        <legend>{{ p.name }}</legend>
+
+        <form method="post" action="{{ url_for('set_mute', priest_id=p.id) }}" style="display:inline">
+          <input type="hidden" name="muted" value="{{ 'false' if p.notifications_muted else 'true' }}">
+          <button type="submit">{{ "Unmute notifications" if p.notifications_muted else "Mute notifications" }}</button>
+        </form>
+
+        <form method="post" action="{{ url_for('set_disable', priest_id=p.id) }}" style="display:inline">
+          <input type="hidden" name="disabled" value="{{ 'false' if p.manual_disabled else 'true' }}">
+          <button type="submit">{{ "Re-enable" if p.manual_disabled else "Disable now" }}</button>
+        </form>
+
+        <form method="post" action="{{ url_for('set_day_off', priest_id=p.id) }}" style="display:inline">
+          <select name="day_off">
+            <option value="">No recurring day off</option>
+            {% for day in weekday_order %}
+              <option value="{{ day }}" {% if p.day_off == day %}selected{% endif %}>{{ day }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Set day off</button>
+        </form>
+
+        <form method="post" action="{{ url_for('set_recollection', priest_id=p.id) }}" style="display:inline">
+          <select name="ordinal">
+            <option value="">No day of recollection</option>
+            {% for n in [1, 2, 3, 4, 5] %}
+              <option value="{{ n }}" {% if p.day_of_recollection and p.day_of_recollection.ordinal == n %}selected{% endif %}>{{ n }}{% if n == 1 %}st{% elif n == 2 %}nd{% elif n == 3 %}rd{% else %}th{% endif %} Wednesday</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Set recollection</button>
+        </form>
+
+        <form method="post" action="{{ url_for('set_vacation', priest_id=p.id) }}" style="display:inline">
+          <input type="date" name="start" value="{{ p.vacation.start if p.vacation else '' }}">
+          <input type="date" name="end" value="{{ p.vacation.end if p.vacation else '' }}">
+          <button type="submit">Set vacation</button>
+        </form>
+        {% if p.vacation %}
+          <form method="post" action="{{ url_for('set_vacation', priest_id=p.id) }}" style="display:inline">
+            <input type="hidden" name="start" value="">
+            <input type="hidden" name="end" value="">
+            <button type="submit">Clear vacation</button>
+          </form>
+        {% endif %}
+      </fieldset>
+    {% endfor %}
+  </section>
+
+  {% if pending_confirmations %}
+    <section>
+      <h2>Pending Confirmations</h2>
+      <p>Waiting on a Signal reply from these priests — resolved via text, not here.</p>
+      <ul>
+        {% for pc in pending_confirmations %}
+          <li>
+            <strong>{{ pc.priest_name }}</strong> —
+            {% if pc.type == "day_off_confirm" %}
+              confirm/shift day off (vacation covering for {{ pc.vacationing_priest_name }} until {{ pc.vacation_end }})
+            {% elif pc.type == "menu_availability" %}
+              in the AVAILABILITY menu, choosing an option
+            {% elif pc.type == "menu_day_off" %}
+              in the AVAILABILITY menu, entering a day off
+            {% elif pc.type == "menu_recollection" %}
+              in the AVAILABILITY menu, entering a day of recollection
+            {% elif pc.type == "menu_vacation" %}
+              in the AVAILABILITY menu, entering vacation dates
+            {% else %}
+              {{ pc.type }}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2>Manual Override</h2>
+    <p>Set an exact order (advanced — use Rotate above for the normal case).</p>
+    <form method="post" action="{{ url_for('override') }}">
+      {% for p in order %}
+        <input type="text" name="order" value="{{ p.id }}">
+      {% endfor %}
+      <button type="submit">Apply exact order</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Priest Roster</h2>
+    <form method="post" action="{{ url_for('add_priest') }}">
+      <input name="id" placeholder="id (e.g. fr_smith)" required>
+      <input name="name" placeholder="Display name" required>
+      <input name="cell_number" placeholder="+1916...">
+      <input name="ring_count" placeholder="4" value="4">
+      <button type="submit">Add priest</button>
+    </form>
+    <form method="post" action="{{ url_for('remove_priest') }}">
+      <input name="id" placeholder="id to remove" required>
+      <button type="submit">Remove priest</button>
+    </form>
+    <form method="post" action="{{ url_for('swap_priests') }}">
+      <input name="id_a" placeholder="priest id A" required>
+      <input name="id_b" placeholder="priest id B" required>
+      <button type="submit">Swap positions</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>History</h2>
+    <table>
+      <thead><tr><th>Timestamp (California)</th><th>Action</th><th>Triggered by</th><th>Detail</th></tr></thead>
+      <tbody>
+        {% for h in history %}
+          <tr>
+            <td>{{ h.timestamp }}</td>
+            <td>{{ h.action }}</td>
+            <td>{{ h.triggered_by }}</td>
+            <td>{{ h.reason or (h.order_after | default('')) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</body>
+</html>

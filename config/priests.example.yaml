@@ -1,0 +1,33 @@
+# EXAMPLE priest roster - copy to config/priests.yaml and fill in real numbers.
+# Priest roster for the Sacramental Emergency Line rotation.
+# Order in this list is only the INITIAL order at first run — after that,
+# current order lives in data/state.json (created automatically) and is
+# what the app actually uses. Edit this file (or use the web dashboard)
+# to add/remove/swap priests; the dashboard is the easier path for
+# non-technical use.
+#
+# id: short stable identifier, never change once in use (history log references it)
+# ring_count: number of rings before forwarding to the next priest
+
+priests:
+  - id: fr_martin
+    name: "Fr James Martin SJ"
+    extension: ""          # internal RC extension, if any (informational only)
+    cell_number: "+19165550011"
+    audit_notices: true    # hears the first four successful Monday audits (app/audit.py)
+    ring_count: 4
+    active: true
+
+  - id: fr_bugnini
+    name: "Fr Bugnini SSPX"
+    extension: ""
+    cell_number: "+19165550012"
+    ring_count: 4
+    active: true
+
+  - id: fr_youngtrad
+    name: "Fr Youngtrad FSSP"
+    extension: ""
+    cell_number: "+19165550013"
+    ring_count: 4
+    active: true

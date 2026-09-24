@@ -1,0 +1,19 @@
+// Installed by sacramental-line-rotation/ops/install.sh.
+// Adds to Debian's default 50unattended-upgrades (which already covers
+// Debian stable + security). Docker and Tailscale come from their own
+// repos, so they have to be listed explicitly or they'd never update.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-updates";
+        "origin=Docker,label=Docker CE";
+        "origin=Tailscale";
+};
+
+// Reboot when an update needs it (kernel, libc...), at midnight.
+// WithUsers: the desktop login on this machine would otherwise block it forever.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+Unattended-Upgrade::Automatic-Reboot-Time "00:00";
+
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::MinimalSteps "true";

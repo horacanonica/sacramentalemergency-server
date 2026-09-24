@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup trigger for the signal-cli update, in case the path watch missed the answer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

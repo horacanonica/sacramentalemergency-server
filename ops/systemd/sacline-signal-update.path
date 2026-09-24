@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the signal-cli update as soon as a priest answers Y
+
+[Path]
+PathChanged=/home/padre/sacramental-line-rotation/data/signal-update-response.json
+Unit=sacline-signal-update.service
+
+[Install]
+WantedBy=paths.target
