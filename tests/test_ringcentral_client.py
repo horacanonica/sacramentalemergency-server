@@ -195,9 +195,13 @@ def test_apply_order_reenables_a_disabled_priest(driver: CommHandlingApiDriver, 
     assert driver.read_order() == [MARTIN, BUGNINI, YOUNGTRAD]
 
 
-def test_shrinking_the_ring_drops_the_extra_leg(driver: CommHandlingApiDriver, fake: FakeRingCentral) -> None:
+def test_shrinking_the_ring_toggles_the_extra_leg_off(driver: CommHandlingApiDriver, fake: FakeRingCentral) -> None:
+    """A priest on his day off stays in the portal list, switched off."""
     driver.apply_order(priests(YOUNGTRAD, MARTIN))
-    assert leg_phones(fake.patched[0]["dispatching"]) == [YOUNGTRAD, MARTIN]
+    assert leg_phones(fake.patched[0]["dispatching"]) == [YOUNGTRAD, MARTIN, BUGNINI]
+    legs = [a for a in fake.patched[0]["dispatching"]["actions"] if a["type"] == "RingGroupAction"]
+    assert [leg["enabled"] for leg in legs] == [True, True, False]
+    assert driver.read_order() == [YOUNGTRAD, MARTIN]
 
 
 def test_a_rejected_patch_raises(driver: CommHandlingApiDriver, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,3 +329,53 @@ def test_write_is_refused_if_voicemail_would_be_lost(
     with pytest.raises(RingCentralDriverError, match="VoiceMailTerminatingTarget"):
         driver.apply_order(priests(YOUNGTRAD, BUGNINI, MARTIN))
     assert stub.patched == []
+
+
+def test_delete_leg_removes_only_that_priest(driver: CommHandlingApiDriver, fake: FakeRingCentral) -> None:
+    driver.delete_leg(MARTIN)
+    phones = leg_phones(fake.patched[0]["dispatching"])
+    assert MARTIN not in phones and len(phones) == 2
+    assert fake.patched[0]["dispatching"]["actions"][-1]["ringingTargetType"] == "VoiceMailTerminatingTarget"
+
+
+def test_delete_leg_refuses_the_only_ringing_priest(driver: CommHandlingApiDriver, monkeypatch: pytest.MonkeyPatch) -> None:
+    rule = work_hours_rule([
+        ring_leg(BUGNINI, "Fr Bugnini SSPX"),
+        ring_leg(MARTIN, "Fr James Martin SJ", enabled=False),
+    ])
+    stub = FakeRingCentral(rule)
+    monkeypatch.setattr(rc, "requests", stub)
+    with pytest.raises(RingCentralDriverError, match="only ringing priest"):
+        driver.delete_leg(BUGNINI)
+    assert stub.patched == []
+
+
+def test_apply_order_does_not_recreate_a_priest_deleted_by_hand(driver: CommHandlingApiDriver, monkeypatch: pytest.MonkeyPatch) -> None:
+    rule = work_hours_rule([
+        ring_leg(BUGNINI, "Fr Bugnini SSPX"),
+        ring_leg(YOUNGTRAD, "Fr Youngtrad FSSP"),
+    ])
+    stub = FakeRingCentral(rule)
+    monkeypatch.setattr(rc, "requests", stub)
+    ordered = priests(MARTIN, BUGNINI, YOUNGTRAD)
+    ordered[0]["rc_new"] = False
+    driver.apply_order(ordered)
+    assert leg_phones(stub.patched[0]["dispatching"]) == [BUGNINI, YOUNGTRAD]
+
+
+def test_apply_order_creates_a_priest_added_through_the_bot(driver: CommHandlingApiDriver, monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = FakeRingCentral(work_hours_rule([ring_leg(BUGNINI, "Fr Bugnini SSPX")]))
+    monkeypatch.setattr(rc, "requests", stub)
+    ordered = priests(MARTIN, BUGNINI)
+    ordered[0]["rc_new"] = True
+    driver.apply_order(ordered)
+    assert leg_phones(stub.patched[0]["dispatching"]) == [MARTIN, BUGNINI]
+
+
+def test_read_ring_list_includes_switched_off_legs(driver: CommHandlingApiDriver, monkeypatch: pytest.MonkeyPatch) -> None:
+    rule = work_hours_rule([ring_leg(BUGNINI, "Fr Bugnini SSPX"), ring_leg(MARTIN, "Fr James Martin SJ", enabled=False)])
+    monkeypatch.setattr(rc, "requests", FakeRingCentral(rule))
+    assert driver.read_ring_list() == [
+        {"phone": BUGNINI, "name": "Fr Bugnini SSPX", "enabled": True, "duration": 20},
+        {"phone": MARTIN, "name": "Fr James Martin SJ", "enabled": False, "duration": 20},
+    ]

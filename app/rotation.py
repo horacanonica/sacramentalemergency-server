@@ -76,6 +76,12 @@ class RotationError(Exception):
 WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 VALID_WEEKDAYS = set(WEEKDAY_ORDER)
 WEDNESDAY_INDEX = 2  # date.weekday(): Monday=0 ... Sunday=6
+# A removed priest can be restored for this long, then is forgotten.
+DELETED_KEEP_DAYS = 30
+
+
+def _digits(phone: str | None) -> str:
+    return "".join(ch for ch in (phone or "") if ch.isdigit())
 
 
 
@@ -181,6 +187,12 @@ class RotationManager:
     _cover_prompts_sent: dict[str, str] = field(default_factory=dict, init=False)
     _failsafe_active: bool = field(default=False, init=False)
     _signal_down_alerted: bool = field(default=False, init=False)
+    # Ring day (ISO date) of the last 8 PM check for hand edits in
+    # RingCentral (app/rc_sync.py).
+    _last_rc_check: str | None = field(default=None, init=False)
+    # Removed priests, kept DELETED_KEEP_DAYS so they can be restored:
+    # [{"priest": roster record, "availability", "deleted_at", "deleted_by"}]
+    _deleted_priests: list[dict[str, Any]] = field(default_factory=list, init=False)
     # Set when state.json was unreadable and the previous save was used
     # instead: the name the damaged file was kept under (see _read_state).
     recovered_from_damage: str | None = field(default=None, init=False)
@@ -259,6 +271,9 @@ class RotationManager:
             self._cover_prompts_sent = state.get("cover_prompts_sent", {})
             self._failsafe_active = bool(state.get("failsafe_active", False))
             self._signal_down_alerted = bool(state.get("signal_down_alerted", False))
+            self._last_rc_check = state.get("last_rc_check")
+            self._deleted_priests = list(state.get("deleted_priests", []))
+            purge_counts = self._purge_expired_deleted() or purge_counts
             if purge_counts:
                 self._save()
         else:
@@ -281,6 +296,8 @@ class RotationManager:
             self._cover_prompts_sent = {}
             self._failsafe_active = False
             self._signal_down_alerted = False
+            self._last_rc_check = None
+            self._deleted_priests = []
             self._save()
 
     def _save(self) -> None:
@@ -304,6 +321,8 @@ class RotationManager:
             "cover_prompts_sent": self._cover_prompts_sent,
             "failsafe_active": self._failsafe_active,
             "signal_down_alerted": self._signal_down_alerted,
+            "last_rc_check": self._last_rc_check,
+            "deleted_priests": self._deleted_priests,
         }
         self._write_state(state)
 
@@ -1185,6 +1204,10 @@ class RotationManager:
             record["vacation"] = vacation
             record["day_of_recollection"] = avail.get("day_of_recollection")
             record["notifications_muted"] = avail.get("notifications_muted", False)
+            # Added through the bot and not yet seen on RingCentral: the
+            # driver may create his ring leg, and the 8 PM check must not
+            # read his missing leg as a hand deletion.
+            record["rc_new"] = avail.get("rc_new", False)
             record["available_today"] = self.is_available(pid)
             result.append(record)
         return result
@@ -1279,7 +1302,10 @@ class RotationManager:
         self._save()
         return self.current_order()
 
-    def add_priest(self, priest: dict[str, Any], triggered_by: str) -> None:
+    def add_priest(self, priest: dict[str, Any], triggered_by: str, rc_new: bool = True) -> None:
+        """rc_new=False when the priest is already on the RingCentral ring
+        (adopted from a hand edit there); otherwise his leg is created on
+        the next ring write."""
         priests = load_priests(self.config_path)
         if any(p["id"] == priest["id"] for p in priests):
             raise RotationError(f"priest id '{priest['id']}' already exists")
@@ -1288,14 +1314,48 @@ class RotationManager:
         if priest.get("active", True):
             self._order.append(priest["id"])
             self._availability[priest["id"]] = self._default_availability()
+            if rc_new:
+                self._availability[priest["id"]]["rc_new"] = True
         self._log("add_priest", triggered_by=triggered_by, priest_id=priest["id"])
         self._save()
 
+    def clear_rc_new(self, priest_id: str) -> None:
+        avail = self._availability.get(priest_id)
+        if avail and avail.pop("rc_new", None) is not None:
+            self._save()
+
+    @property
+    def last_rc_check(self) -> str | None:
+        return self._last_rc_check
+
+    def mark_rc_check(self, ring_day: date) -> None:
+        self._last_rc_check = ring_day.isoformat()
+        self._save()
+
+    def log_event(self, action: str, triggered_by: str, reason: str = "", **extra: Any) -> None:
+        self._log(action, triggered_by=triggered_by, reason=reason, **extra)
+        self._save()
+
     def remove_priest(self, priest_id: str, triggered_by: str) -> None:
+        """Take a priest off the roster (and so the Signal allowlist). His
+        record and schedule are kept DELETED_KEEP_DAYS for restore_priest()."""
         priests = load_priests(self.config_path)
         remaining = [p for p in priests if p["id"] != priest_id]
         if len(remaining) == len(priests):
             raise RotationError(f"priest id '{priest_id}' not found")
+        record = next(p for p in priests if p["id"] == priest_id)
+        self._deleted_priests = [
+            d for d in self._deleted_priests
+            if _digits(d["priest"].get("cell_number")) != _digits(record.get("cell_number"))
+        ]
+        self._deleted_priests.append(
+            {
+                "priest": dict(record),
+                "availability": dict(self._availability.get(priest_id, {})),
+                "deleted_at": california_now().isoformat(),
+                "deleted_by": triggered_by,
+            }
+        )
         save_priests(self.config_path, remaining)
         if priest_id in self._order:
             self._order.remove(priest_id)
@@ -1303,6 +1363,59 @@ class RotationManager:
         self._pending_confirmations.pop(priest_id, None)
         self._log("remove_priest", triggered_by=triggered_by, priest_id=priest_id)
         self._save()
+
+    def _purge_expired_deleted(self) -> bool:
+        """Forget deleted priests after DELETED_KEEP_DAYS. True if any went."""
+        cutoff = california_now() - timedelta(days=DELETED_KEEP_DAYS)
+        keep, gone = [], []
+        for entry in self._deleted_priests:
+            try:
+                expired = as_california_datetime(datetime.fromisoformat(entry["deleted_at"])) < cutoff
+            except (KeyError, ValueError):
+                expired = True
+            (gone if expired else keep).append(entry)
+        if not gone:
+            return False
+        self._deleted_priests = keep
+        for entry in gone:
+            self._log(
+                "deleted_priest_purged",
+                triggered_by="system",
+                reason=f"kept {DELETED_KEEP_DAYS} days after deletion",
+                priest_id=entry.get("priest", {}).get("id"),
+            )
+        return True
+
+    def deleted_priests(self) -> list[dict[str, Any]]:
+        """Priests removed in the last DELETED_KEEP_DAYS, newest first."""
+        return sorted(self._deleted_priests, key=lambda d: d["deleted_at"], reverse=True)
+
+    def deleted_priest_for_phone(self, phone: str | None) -> dict[str, Any] | None:
+        return next(
+            (d for d in self._deleted_priests if _digits(d["priest"].get("cell_number")) == _digits(phone)),
+            None,
+        )
+
+    def restore_priest(self, cell_number: str, triggered_by: str, rc_new: bool = True) -> dict[str, Any]:
+        """Put a deleted priest back with his old name, number and schedule."""
+        entry = self.deleted_priest_for_phone(cell_number)
+        if entry is None:
+            raise RotationError(f"no deleted priest with number {cell_number}")
+        record = dict(entry["priest"])
+        existing = {p["id"] for p in load_priests(self.config_path)}
+        base, n = record["id"], 2
+        while record["id"] in existing:
+            record["id"], n = f"{base}_{n}", n + 1
+        self.add_priest(record, triggered_by=triggered_by, rc_new=rc_new)
+        avail = {**self._default_availability(), **entry.get("availability", {})}
+        avail.pop("rc_new", None)
+        if rc_new:
+            avail["rc_new"] = True
+        self._availability[record["id"]] = avail
+        self._deleted_priests.remove(entry)
+        self._log("restore_priest", triggered_by=triggered_by, priest_id=record["id"])
+        self._save()
+        return record
 
     def swap(self, priest_id_a: str, priest_id_b: str, triggered_by: str) -> list[dict[str, Any]]:
         if priest_id_a not in self._order or priest_id_b not in self._order:

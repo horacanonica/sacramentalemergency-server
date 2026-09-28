@@ -75,10 +75,14 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 - Every ring write is read back and verified. "Accepted but not applied"
   is a failure, not a rotation.
 - California time, hardcoded. Absences run 8:00 PM the evening before through 8:00 PM on the listed day.
+- Days off, vacations, retreats and absences only toggle a priest's RingCentral leg **off** (`enabled: false`, kept in the list below the ringing legs); `apply_order` never deletes a leg. The bot never deletes a priest on its own. Deletion comes only from a person: Signal Settings > 2 Remove priest (after the "will be deleted from the system … Confirm? Y/N" warning; it also deletes his leg via `delete_leg`), the dashboard remove (also deletes the leg), or a leg deleted by hand in RingCentral (adopted at 8 PM, below). `apply_order` never re-creates a leg someone deleted by hand; it only creates legs for priests added through the bot (`rc_new`). (Rule set 27 Sep 2026 after the first automatic switch deleted Fr. Lopez's leg.)
+- Deleted priests are kept 30 days (`deleted_priests` in state.json, `DELETED_KEEP_DAYS`) with their schedule; Settings > 3 Restore recently deleted (listed by name and number) brings one back, and so does re-adding his number by hand in RingCentral. After 30 days the record is purged (`deleted_priest_purged` in history).
+- 8 PM check (`app/rc_sync.py`, added 27 Sep 2026): once per ring day, in `_sync_automatic_ring` just before tomorrow's ring is written, the bot reads the whole Ring in order list and compares it with what it last wrote (`last_applied_order` + roster). RingCentral is taken as correct: unknown numbers join the roster/allowlist, deleted legs leave it, a leg switched off by hand sets `manual_disabled` (switched on clears it), and a hand-changed order is adopted. Changes are texted to the unmuted priests; no change is only a `rc_check` history entry. Numbers not on the roster are still switched off by any write before 8 PM.
+- Unknown number texts the bot: before the "isn't authorized" reply, `_admit_if_on_ring` (signal_bot) reads the RingCentral ring list; if his number is on it he is admitted right away (`rc_sync.admit_ring_leg`, restores a 30-day-deleted record if there is one), the other priests are told, and he gets the welcome setup (`app/onboarding.py`, pending `welcome_setup`: day off → recollection → vacation, SKIP / SKIP ALL, 1-hour timeout). A restored priest gets "Welcome back" instead. Misses are not looked up again for 10 minutes. The 8 PM check sends the same welcome.
 - Coverage floor: at least one priest on the line; last remaining priest stays on despite a day off.
 - No visit counting (removed 24 Sep 2026): no totals, no anointing log, no band-cross prompt. Rotation is `ROTATE` / dashboard only. Trip-report texts get a "no longer tracked" reply. Old count data is purged from state.json on load (`_REMOVED_COUNT_KEYS`).
 - `STATUS` lists names only and marks off-line priests `(inactive)` right after the name.
-- `AVAILABILITY` is Settings item 4, not a top-level command. Settings: 1 Add priest, 2 Remove priest, 3 View audit log, 4 Availability, 5 Set order (same `manual_override` as the dashboard; Y pushes RingCentral and texts everyone like ROTATE).
+- `AVAILABILITY` is Settings item 5, not a top-level command. Settings (renumbered 27 Sep 2026): 1 Add priest, 2 Remove priest, 3 Restore recently deleted, 4 View audit log, 5 Availability, 6 Set order (same `manual_override` as the dashboard; Y pushes RingCentral and texts everyone like ROTATE).
 - Failsafe texts everyone (including muted). Routine broadcasts skip muted priests.
 - Errors and a dead Signal daemon also SMS the priest cells via RingCentral from the emergency-line number, prefixed `Emergency Line bot:`.
 - Do not put Tailscale IPs, dashboard passwords, or other-project paths in priest-facing docs.
@@ -90,7 +94,7 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 docker compose up -d --build
 ```
 
-Tests (from a venv with pytest): `pytest -q` — 199 passing as of 24 Sep 2026.
+Tests (from a venv with pytest): `pytest -q` — 216 passing as of 27 Sep 2026 (run before 8 PM, or with time-machine set to noon).
 
 Check which RingCentral backend the account is on before debugging any
 write failure:

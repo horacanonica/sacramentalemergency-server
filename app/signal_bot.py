@@ -26,15 +26,29 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app.audit import format_audit_log_message
 from app.failsafe import enter_manual_failsafe
-from app.localtime import california_now, california_today, format_california
+from app.localtime import (
+    as_california_datetime,
+    california_now,
+    california_today,
+    effective_ring_date,
+    format_california,
+)
 from app.notifier import Notifier
+from app.onboarding import LATER_NOTE, NEXT_STEP, STEP_PROMPTS, WELCOME_BACK_TEXT, WELCOME_SETUP
+from app.rc_sync import admit_ring_leg, check_rc_hand_edits, send_welcome
 from app.ringcentral_client import RingCentralDriver, RingCentralDriverError
-from app.rotation import RotationError, RotationManager, next_recollection_date, parse_weekday_input
+from app.rotation import (
+    DELETED_KEEP_DAYS,
+    RotationError,
+    RotationManager,
+    next_recollection_date,
+    parse_weekday_input,
+)
 from app.scheduler import send_day_off_confirm_prompt
 from app.signal_client import SignalClient
 from app.signal_update import deliver_offer as deliver_signal_update_offer
@@ -48,7 +62,7 @@ HELP_TEXT = (
     "ROTATE - move the current lead priest to the back of the line\n"
     "STATUS - show the current ring order\n"
     "DISABLE / ENABLE - turn automatic day-off/vacation/recollection disabling off/on for everyone\n"
-    "SETTINGS - availability, set the order, add or remove a priest, audit log\n"
+    "SETTINGS - availability, set the order, add, remove or restore a priest, audit log\n"
     "ABOUT - a full explanation of how this all works\n"
     "HELP - show this message\n"
     "CANCEL - leave any menu without saving"
@@ -62,13 +76,24 @@ SETTINGS_MENU_TEXT = (
     "Settings:\n"
     "1. Add priest\n"
     "2. Remove priest\n"
-    "3. View audit log\n"
-    "4. Availability\n"
-    "5. Set order\n"
-    "Reply 1-5, or the option name. Type CANCEL to leave."
+    "3. Restore recently deleted\n"
+    "4. View audit log\n"
+    "5. Availability\n"
+    "6. Set order\n"
+    "Reply 1-6, or the option name. Type CANCEL to leave."
+)
+
+UNAUTHORIZED_TEXT = (
+    "Sorry, this number isn't authorized to manage the rotation. If you are a new priest, "
+    "please ask one of the other priests to add you to the system through the Signal bot."
 )
 
 PENDING_TIMEOUT_SECONDS = 300
+WELCOME_SETUP_TIMEOUT_SECONDS = 60 * 60
+# An unknown number that isn't on the RingCentral ring isn't looked up
+# again for this long, so a stranger texting repeatedly can't hammer RC.
+RING_LOOKUP_RETRY_SECONDS = 10 * 60
+_ring_lookup_misses: dict[str, float] = {}
 COVER_PROMPT_TIMEOUT_SECONDS = 24 * 60 * 60
 
 AVAILABILITY_OPTIONS_TEXT = (
@@ -281,6 +306,12 @@ def _sync_automatic_ring(
     if rotation.failsafe_active or rotation.audit_in_progress:
         return
 
+    # Once per ring day (8 PM), before tomorrow's ring is written: adopt
+    # any hand edits made in RingCentral since the bot last wrote it.
+    ring_day = effective_ring_date()
+    if rotation.last_rc_check != ring_day.isoformat():
+        check_rc_hand_edits(rotation, rc_driver, signal_client, ring_day)
+
     effective = rotation.effective_order()
     ids = [p["id"] for p in effective]
     new_lead_id = ids[0] if ids else None
@@ -346,6 +377,7 @@ def _poll_once(
         return
     _expire_stale_menus(rotation, signal_client)
     _expire_unanswered_cover_prompts(rotation, signal_client)
+    _expire_welcome_setup(rotation, signal_client)
     _sync_automatic_ring(rotation, signal_client, rc_driver, notifier)
     deliver_signal_update_offer(rotation, signal_client)
 
@@ -355,9 +387,14 @@ def _poll_once(
 
     for msg in signal_client.receive():
         priest = by_number.get(msg.sender_number)
+        if priest is None and _admit_if_on_ring(msg.sender_number, rotation, rc_driver, signal_client):
+            # Welcomed and asked the first setup question; his first
+            # message is not treated as a command.
+            by_number = {p["cell_number"]: p for p in rotation.current_order() if p.get("cell_number")}
+            continue
         if priest is None:
             logger.warning("Ignoring message from unrecognized number %s: %r", msg.sender_number, msg.text)
-            signal_client.send([msg.sender_number], "Sorry, this number isn't authorized to manage the rotation.")
+            signal_client.send([msg.sender_number], UNAUTHORIZED_TEXT)
             continue
 
         text = msg.text.strip()
@@ -378,7 +415,9 @@ def _poll_once(
             rotation.touch_pending_confirmation(priest["id"])
             pending = rotation.pending_confirmation(priest["id"]) or pending
             ptype = pending.get("type")
-            if ptype in ("day_off_confirm", "absence_cover_confirm"):
+            if ptype == WELCOME_SETUP:
+                _handle_welcome_setup(text, priest, pending, signal_client, rotation)
+            elif ptype in ("day_off_confirm", "absence_cover_confirm"):
                 _handle_pending_confirmation(text, priest, pending, signal_client, rotation, rc_driver, notifier)
             elif ptype in (
                 "menu_who",
@@ -393,9 +432,11 @@ def _poll_once(
                 "menu_add_priest_confirm",
                 "menu_remove_priest",
                 "menu_remove_priest_confirm",
+                "menu_restore_priest",
+                "menu_restore_priest_confirm",
                 "menu_set_order",
             ):
-                _handle_menu_pending(text, priest, pending, ptype, signal_client, rotation)
+                _handle_menu_pending(text, priest, pending, ptype, signal_client, rotation, rc_driver, notifier)
             elif ptype == "menu_set_order_confirm":
                 _handle_set_order_confirm(text, priest, pending, rotation, rc_driver, notifier)
             else:
@@ -549,6 +590,8 @@ def _handle_menu_pending(
     ptype: str,
     signal_client: SignalClient,
     rotation: RotationManager,
+    rc_driver: RingCentralDriver,
+    notifier: Notifier,
 ) -> None:
     if ptype == "menu_who":
         _handle_menu_who(text, priest, signal_client, rotation)
@@ -573,7 +616,11 @@ def _handle_menu_pending(
     elif ptype == "menu_remove_priest":
         _handle_menu_remove_priest(text, priest, signal_client, rotation)
     elif ptype == "menu_remove_priest_confirm":
-        _handle_menu_remove_priest_confirm(text, priest, pending, signal_client, rotation)
+        _handle_menu_remove_priest_confirm(text, priest, pending, signal_client, rotation, rc_driver, notifier)
+    elif ptype == "menu_restore_priest":
+        _handle_menu_restore_priest(text, priest, signal_client, rotation)
+    elif ptype == "menu_restore_priest_confirm":
+        _handle_menu_restore_priest_confirm(text, priest, pending, signal_client, rotation, rc_driver, notifier)
     elif ptype == "menu_set_order":
         _handle_menu_set_order(text, priest, signal_client, rotation)
 
@@ -946,12 +993,22 @@ def _handle_menu_settings(text: str, priest: dict, signal_client: SignalClient, 
     elif reply in ("2", "REMOVE", "REMOVE PRIEST"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_remove_priest"})
         signal_client.send([priest["cell_number"]], _remove_priest_menu_text(rotation))
-    elif reply in ("3", "AUDIT", "AUDIT LOG", "VIEW AUDIT", "VIEW AUDIT LOG", "LOG"):
+    elif reply in ("3", "RESTORE", "RESTORE PRIEST", "RESTORE RECENTLY DELETED"):
+        if not rotation.deleted_priests():
+            rotation.pop_pending_confirmation(priest["id"])
+            signal_client.send(
+                [priest["cell_number"]],
+                f"No priests were deleted in the last {DELETED_KEEP_DAYS} days.",
+            )
+            return
+        rotation.set_pending_confirmation(priest["id"], {"type": "menu_restore_priest"})
+        signal_client.send([priest["cell_number"]], _restore_priest_menu_text(rotation))
+    elif reply in ("4", "AUDIT", "AUDIT LOG", "VIEW AUDIT", "VIEW AUDIT LOG", "LOG"):
         rotation.pop_pending_confirmation(priest["id"])
         signal_client.send([priest["cell_number"]], format_audit_log_message(rotation))
-    elif reply in ("4", "AVAILABILITY", "AVAIL"):
+    elif reply in ("5", "AVAILABILITY", "AVAIL"):
         _start_availability_menu(priest, signal_client, rotation)
-    elif reply in ("5", "ORDER", "SET ORDER"):
+    elif reply in ("6", "ORDER", "SET ORDER"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_set_order"})
         signal_client.send([priest["cell_number"]], _set_order_prompt(rotation))
     else:
@@ -1001,7 +1058,7 @@ def _remove_priest_menu_text(rotation: RotationManager) -> str:
 
 def _expire_stale_menus(rotation: RotationManager, signal_client: SignalClient) -> None:
     expired = rotation.expire_stale_pendings(
-        PENDING_TIMEOUT_SECONDS, skip_types={"absence_cover_confirm"}
+        PENDING_TIMEOUT_SECONDS, skip_types={"absence_cover_confirm", WELCOME_SETUP}
     )
     if not expired:
         return
@@ -1014,6 +1071,93 @@ def _expire_stale_menus(rotation: RotationManager, signal_client: SignalClient) 
                 "Cancelled — no reply for 5 minutes.",
             )
 
+
+
+def _expire_welcome_setup(rotation: RotationManager, signal_client: SignalClient) -> None:
+    expired = rotation.expire_stale_pendings(WELCOME_SETUP_TIMEOUT_SECONDS, only_types={WELCOME_SETUP})
+    by_id = {p["id"]: p for p in rotation.current_order()}
+    for pid, _entry in expired:
+        target = by_id.get(pid)
+        if target and target.get("cell_number"):
+            signal_client.send([target["cell_number"]], f"No reply for an hour, so the setup was skipped. {LATER_NOTE}")
+
+
+def _admit_if_on_ring(
+    sender: str, rotation: RotationManager, rc_driver: RingCentralDriver, signal_client: SignalClient
+) -> bool:
+    """An unknown number texted the bot. If someone put him on the
+    RingCentral ring by hand, add him now (rather than at the 8 PM
+    check), tell the others, and start his welcome setup."""
+    if rc_driver is None or getattr(rc_driver, "requires_manual_step", False):
+        return False
+    digits = re.sub(r"\D", "", sender)
+    if time.time() - _ring_lookup_misses.get(digits, 0) < RING_LOOKUP_RETRY_SECONDS:
+        return False
+    try:
+        ring = rc_driver.read_ring_list() or []
+    except Exception:  # noqa: BLE001 - fall through to the normal rejection
+        logger.exception("Could not check RingCentral for unknown number %s", sender)
+        return False
+    leg = next((l for l in ring if re.sub(r"\D", "", l["phone"]) == digits), None)
+    if leg is None:
+        _ring_lookup_misses[digits] = time.time()
+        return False
+    record, restored = admit_ring_leg(rotation, leg, triggered_by="signal-unknown-number-on-ring")
+    record = dict(record, cell_number=sender)
+    others = [n for n in rotation.notifiable_numbers() if n != sender]
+    if others:
+        verb = "is back" if restored else "was added in RingCentral and has joined"
+        signal_client.send(
+            others, f"{record['name']} {_pretty_phone(sender)} {verb} the Emergency Line bot."
+        )
+    send_welcome(rotation, signal_client, record, restored)
+    return True
+
+
+def _handle_welcome_setup(
+    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    reply = text.strip().upper()
+    cell = [priest["cell_number"]]
+    step = pending.get("step", "day_off")
+    by = f"signal:{priest['name']}"
+    if reply in ("SKIP ALL", "SKIPALL"):
+        rotation.pop_pending_confirmation(priest["id"])
+        signal_client.send(cell, f"No problem - setup skipped. {LATER_NOTE}")
+        return
+    note = ""
+    if reply not in ("SKIP", "NONE", "NO"):
+        try:
+            if step == "day_off":
+                parsed = parse_weekday_input(text)
+                if parsed in (None, "AMBIGUOUS"):
+                    signal_client.send(cell, "Didn't recognize that day. " + STEP_PROMPTS[step])
+                    return
+                rotation.set_day_off(priest["id"], parsed, triggered_by=by, reason="welcome setup")
+                note = f"Day off set to {parsed}."
+            elif step == "recollection":
+                if not reply.isdigit() or not 1 <= int(reply) <= 5:
+                    signal_client.send(cell, STEP_PROMPTS[step])
+                    return
+                rotation.set_day_of_recollection(priest["id"], int(reply), triggered_by=by, reason="welcome setup")
+                note = f"Day of recollection set to the {_ordinal_word(int(reply))} Wednesday."
+            else:
+                parsed_range = _parse_vacation_range(text)
+                if parsed_range is None:
+                    signal_client.send(cell, "Didn't recognize that. " + STEP_PROMPTS[step])
+                    return
+                start, end = parsed_range
+                rotation.set_vacation(priest["id"], start, end, triggered_by=by, reason="welcome setup")
+                note = f"Vacation set from {start:%m/%d} to {end:%m/%d}."
+        except RotationError as exc:
+            note = f"Couldn't set that ({exc}); skipped for now."
+    following = NEXT_STEP[step]
+    if following is None:
+        rotation.pop_pending_confirmation(priest["id"])
+        signal_client.send(cell, " ".join(filter(None, [note, "All set!", LATER_NOTE])))
+        return
+    rotation.set_pending_confirmation(priest["id"], {"type": WELCOME_SETUP, "step": following})
+    signal_client.send(cell, " ".join(filter(None, [note, STEP_PROMPTS[following]])))
 
 
 def _expire_unanswered_cover_prompts(rotation: RotationManager, signal_client: SignalClient) -> None:
@@ -1142,21 +1286,121 @@ def _handle_menu_remove_priest(
             "target_priest_name": target["name"],
         },
     )
-    signal_client.send([priest["cell_number"]], f"Remove {target['name']}? Y/N")
+    signal_client.send([priest["cell_number"]], _remove_priest_warning(target["name"]))
+
+
+def _remove_priest_warning(name: str) -> str:
+    return (
+        f"{name} will be deleted from the system. His name and number will be kept for "
+        f"{DELETED_KEEP_DAYS} days, and he can be restored under SETTINGS > 3 Restore recently "
+        f"deleted. After {DELETED_KEEP_DAYS} days they are erased, and he would need to be "
+        "added back manually to be in the rotation again. Confirm? Y/N"
+    )
+
+
+def _pretty_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return phone
+
+
+def _restore_priest_menu_text(rotation: RotationManager) -> str:
+    lines = [f"Restore which priest? (deleted in the last {DELETED_KEEP_DAYS} days)"]
+    for i, entry in enumerate(rotation.deleted_priests(), start=1):
+        record = entry["priest"]
+        deleted = as_california_datetime(datetime.fromisoformat(entry["deleted_at"]))
+        erased = deleted + timedelta(days=DELETED_KEEP_DAYS)
+        lines.append(
+            f"{i}. {record['name']} {_pretty_phone(record.get('cell_number', ''))} "
+            f"(deleted {deleted:%b} {deleted.day}, erased {erased:%b} {erased.day})"
+        )
+    lines.append("Reply with a number, or CANCEL.")
+    return "\n".join(lines)
+
+
+def _handle_menu_restore_priest(
+    text: str, priest: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    choices = rotation.deleted_priests()
+    reply = text.strip()
+    if not reply.isdigit() or not (1 <= int(reply) <= len(choices)):
+        signal_client.send([priest["cell_number"]], _restore_priest_menu_text(rotation))
+        return
+    target = choices[int(reply) - 1]["priest"]
+    rotation.set_pending_confirmation(
+        priest["id"],
+        {
+            "type": "menu_restore_priest_confirm",
+            "target_cell": target["cell_number"],
+            "target_priest_name": target["name"],
+        },
+    )
+    signal_client.send(
+        [priest["cell_number"]],
+        f"Restore {target['name']} {_pretty_phone(target['cell_number'])} with his old schedule? Y/N",
+    )
+
+
+def _handle_menu_restore_priest_confirm(
+    text: str,
+    priest: dict,
+    pending: dict,
+    signal_client: SignalClient,
+    rotation: RotationManager,
+    rc_driver: RingCentralDriver,
+    notifier: Notifier,
+) -> None:
+    reply = text.strip().upper()
+    name = pending["target_priest_name"]
+    if reply in ("N", "NO"):
+        rotation.pop_pending_confirmation(priest["id"])
+        signal_client.send([priest["cell_number"]], "Cancelled.")
+        return
+    if reply not in ("Y", "YES"):
+        signal_client.send([priest["cell_number"]], f"Restore {name}? Y/N")
+        return
+    rotation.pop_pending_confirmation(priest["id"])
+    try:
+        rotation.restore_priest(pending["target_cell"], triggered_by=f"signal:{priest['name']}")
+    except RotationError as exc:
+        signal_client.send([priest["cell_number"]], f"Couldn't restore him: {exc}")
+        return
+    ring_note = ""
+    if not _try_apply_effective_order(rotation, rc_driver, notifier, f"Restoring {name} FAILED"):
+        ring_note = " RingCentral could not be updated yet; the bot will retry."
+    signal_client.send(
+        [priest["cell_number"]],
+        f"{name} is back in the rotation and can text the bot again.{ring_note}",
+    )
+    signal_client.send([pending["target_cell"]], WELCOME_BACK_TEXT)
 
 
 def _handle_menu_remove_priest_confirm(
-    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+    text: str,
+    priest: dict,
+    pending: dict,
+    signal_client: SignalClient,
+    rotation: RotationManager,
+    rc_driver: RingCentralDriver,
+    notifier: Notifier,
 ) -> None:
+    """The only path that deletes a priest, from the roster and from the
+    RingCentral ring list. Rotation and absences only toggle legs off."""
     reply = text.strip().upper()
     if reply in ("N", "NO"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_remove_priest"})
         signal_client.send([priest["cell_number"]], _remove_priest_menu_text(rotation))
         return
     if reply not in ("Y", "YES"):
-        signal_client.send([priest["cell_number"]], f"Remove {pending['target_priest_name']}? Y/N")
+        signal_client.send([priest["cell_number"]], _remove_priest_warning(pending["target_priest_name"]))
         return
     target_id = pending["target_priest_id"]
+    target_cell = next(
+        (p.get("cell_number") for p in rotation.current_order() if p["id"] == target_id), None
+    )
     target_name = pending["target_priest_name"]
     if len(rotation.current_order()) <= 2:
         rotation.pop_pending_confirmation(priest["id"])
@@ -1172,9 +1416,29 @@ def _handle_menu_remove_priest_confirm(
         rotation.pop_pending_confirmation(priest["id"])
         return
     rotation.pop_pending_confirmation(priest["id"])
+    # Ring the remaining priests first, which switches his leg off, then
+    # delete the leg, so the line is never left ringing nobody.
+    ring_note = ""
+    if not _try_apply_effective_order(
+        rotation, rc_driver, notifier, f"Removing {target_name} FAILED"
+    ):
+        ring_note = (
+            f" RingCentral could not be updated; {target_name} may still be on the "
+            "ring list. The bot will retry; check the RingCentral app."
+        )
+    elif target_cell:
+        try:
+            rc_driver.delete_leg(target_cell)
+        except RingCentralDriverError:
+            logger.exception("RingCentral delete_leg failed")
+            ring_note = (
+                f" {target_name} is switched off in RingCentral but could not be deleted "
+                "from the ring list there; delete him by hand in the RingCentral app."
+            )
     signal_client.send(
         [priest["cell_number"]],
-        f"{target_name} has been removed and can no longer text the bot.",
+        f"{target_name} has been deleted and can no longer text the bot. His name and number "
+        f"are kept for {DELETED_KEEP_DAYS} days under SETTINGS > 3 Restore recently deleted.{ring_note}",
     )
 
 

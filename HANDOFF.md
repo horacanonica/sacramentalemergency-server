@@ -132,7 +132,7 @@ When automation is on, RingCentral is updated automatically whenever the live or
 
 ## When the order rotates
 
-Only when someone texts `ROTATE`, uses `SETTINGS` → 5 **Set order** to put the priests in any order, or changes it on the dashboard. Nothing is counted and nothing rotates on its own. After a rotate, **everyone** gets a text that the order changed (new #1: “You are now on call”; the others: “The priest on call has changed”), plus STATUS.
+Only when someone texts `ROTATE`, uses `SETTINGS` → 6 **Set order** to put the priests in any order, or changes it on the dashboard. Nothing is counted and nothing rotates on its own. After a rotate, **everyone** gets a text that the order changed (new #1: “You are now on call”; the others: “The priest on call has changed”), plus STATUS.
 
 ---
 
@@ -210,10 +210,10 @@ Refused if turning it back on would leave **zero** priests on the line.
 
 ## Menu tree: AVAILABILITY
 
-Open from `SETTINGS` → `7` / `AVAILABILITY` (not as a top-level command).
+Open from `SETTINGS` → `5` / `AVAILABILITY` (not as a top-level command).
 
 ```
-SETTINGS → 7 / AVAILABILITY
+SETTINGS → 5 / AVAILABILITY
  └─ Who?
      ├─ ME  (or MYSELF / SELF)
      └─ a priest’s name  (Bugnini, Martin, Youngtrad, “Fr. …”)
@@ -271,6 +271,24 @@ A change that would leave **zero** priests on the line **right now** is rejected
 
 ---
 
+## New priest added by hand in RingCentral
+
+If someone adds a priest in RingCentral's Ring in order list, he joins the bot either at the
+8 PM check or the first time he texts the bot, whichever comes first. When he texts, the bot
+checks RingCentral before turning him away; if his name and number are on the ring, he is added,
+the other priests are told, and he gets:
+
+```
+Welcome, Fr. X! Your name and number are on the Sacramental Emergency Line's ring list in
+RingCentral, so you are being added to this system. ...
+1 of 3 - Day off            (a weekday, or SKIP)
+2 of 3 - Day of recollection (1-5th Wednesday, or SKIP)
+3 of 3 - Vacation            (MM/DD-MM/DD, or SKIP)
+SKIP ALL at any point skips the rest; all of it is under SETTINGS > 5 Availability.
+```
+
+A priest deleted in the last 30 days gets his old schedule back and a "Welcome back" instead.
+
 ## Menu tree: SETTINGS
 
 ```
@@ -283,15 +301,26 @@ SETTINGS
  │
  ├─ 2  or  REMOVE  or  REMOVE PRIEST
  │    └─ pick a numbered priest
- │         └─ Confirm Y / N  (Y also revokes their right to text the bot)
+ │         └─ "Fr. X will be deleted from the system. His name and number will be kept
+ │            for 30 days, and he can be restored under SETTINGS > 3 Restore recently
+ │            deleted. After 30 days they are erased, and he would need to be added back
+ │            manually to be in the rotation again. Confirm? Y/N"
+ │            (Y deletes him from the roster AND the RingCentral ring list, and
+ │             revokes his right to text the bot.)
  │
- ├─ 3  or  AUDIT  or  AUDIT LOG  or  VIEW AUDIT LOG
+ ├─ 3  or  RESTORE  or  RESTORE RECENTLY DELETED
+ │    └─ pick from priests deleted in the last 30 days, listed by name and number
+ │       ("1. Fr. X (619) 555-1234 (deleted Sep 27, erased Oct 27)")
+ │         └─ "Restore Fr. X (619) 555-1234 with his old schedule? Y/N"
+ │              (Y puts him back on the roster and the ring, and he can text the bot again)
+ │
+ ├─ 4  or  AUDIT  or  AUDIT LOG  or  VIEW AUDIT LOG
  │    └─ last 3 months of Monday self-audits (then menu closes)
  │
- ├─ 4  or  AVAILABILITY  or  AVAIL
+ ├─ 5  or  AVAILABILITY  or  AVAIL
  │    └─ same tree as [Menu tree: AVAILABILITY](#menu-tree-availability)
  │
- └─ 5  or  ORDER  or  SET ORDER
+ └─ 6  or  ORDER  or  SET ORDER
       └─ shows the current order, numbered
            └─ reply with the new order, first to last: numbers (3 1 2) or names (Youngtrad Martin Bugnini)
                 └─ Confirm Y / N   (Y saves it, updates RingCentral, and texts everyone like ROTATE)
@@ -400,7 +429,7 @@ If the container dies mid-audit, the next start rolls back the saved snapshot an
 
 Same as any switching failure: failsafe (next section). Reason includes what broke (RingCentral could not be read or would not accept a commanded switch, Signal down, ENABLE didn’t stick, and so on). A ring that was changed by hand in RingCentral is not a reason.
 
-Settings → `5` / `AUDIT LOG` shows the last **3 months** of these results.
+Settings → `4` / `AUDIT LOG` shows the last **3 months** of these results.
 
 ### 8. Failsafe (automatic switching disabled)
 
@@ -515,7 +544,7 @@ A rotate texts everyone. If a name is missing, check History: if the rotate is l
 The container must be running. Failsafe should have texted if the bot loop crashed; if Signal itself is down, that text also fails. Check the container logs.
 
 **Monday audit**  
-Settings → 5. Still empty: the audit is skipped entirely while automation is off, and automation has been off since 13 Aug 2026. The first run will be the first Monday 9:00 AM after someone texts `ENABLE`.
+Settings → 4. Still empty: the audit is skipped entirely while automation is off, and automation has been off since 13 Aug 2026. The first run will be the first Monday 9:00 AM after someone texts `ENABLE`.
 
 **RingCentral API outages / breaking changes**  
 There is no subscribe-to-“this API will break” feed. For outages: [status.ringcentral.com](https://status.ringcentral.com/) (email/SMS subscribe) or Admin Portal → a user → Service Status Notification. For API changes: [RingEX API changelog](https://developers.ringcentral.com/guide/basics/changelog) (breaking changes marked). If the API fails on a push or on the Monday audit, failsafe runs.

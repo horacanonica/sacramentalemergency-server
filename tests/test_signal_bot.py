@@ -736,7 +736,7 @@ def test_unrecognized_number_is_rejected(priests_config, state_path):
     assert "isn't authorized" in signal_client.sent[0][1]
 
 
-def test_settings_menu_has_four_items_and_no_totals(priests_config, state_path):
+def test_settings_menu_items_and_no_totals(priests_config, state_path):
     rotation = make_manager(priests_config, state_path)
     signal_client = FakeSignalClient()
     notifier = make_notifier(signal_client)
@@ -745,8 +745,9 @@ def test_settings_menu_has_four_items_and_no_totals(priests_config, state_path):
     open_settings(signal_client, rotation, rc_driver, notifier)
     body = signal_client.sent[-1][1]
     assert "1. Add priest" in body
-    assert "4. Availability" in body
-    assert "5. Set order" in body
+    assert "3. Restore recently deleted" in body
+    assert "5. Availability" in body
+    assert "6. Set order" in body
     assert "total" not in body.lower() and "annual" not in body.lower()
     assert rotation.pending_confirmation("fr_martin")["type"] == "menu_settings"
 
@@ -830,7 +831,12 @@ def test_settings_remove_priest_no_returns_to_list(priests_config, state_path):
     _poll_once(signal_client, rotation, rc_driver, notifier)
     signal_client.queue_incoming(NUM_MARTIN, "1")
     _poll_once(signal_client, rotation, rc_driver, notifier)
-    assert "Remove Fr Bugnini SSPX?" in signal_client.sent[-1][1]
+    assert signal_client.sent[-1][1] == (
+        "Fr Bugnini SSPX will be deleted from the system. His name and number will be kept "
+        "for 30 days, and he can be restored under SETTINGS > 3 Restore recently deleted. "
+        "After 30 days they are erased, and he would need to be added back manually to be "
+        "in the rotation again. Confirm? Y/N"
+    )
     signal_client.queue_incoming(NUM_MARTIN, "N")
     _poll_once(signal_client, rotation, rc_driver, notifier)
     assert "Remove which priest?" in signal_client.sent[-1][1]
@@ -854,7 +860,7 @@ def test_settings_remove_priest_yes_removes(priests_config, state_path):
 
     ids = [p["id"] for p in rotation.current_order()]
     assert "fr_bugnini" not in ids
-    assert "removed" in signal_client.sent[-1][1].lower()
+    assert "has been deleted" in signal_client.sent[-1][1]
     assert "can no longer text the bot" in signal_client.sent[-1][1]
 
     signal_client.queue_incoming(NUM_BUGNINI, "STATUS")
@@ -876,7 +882,7 @@ def test_settings_view_audit_log(priests_config, state_path):
     _poll_once(signal_client, rotation, rc_driver, notifier)
     assert "View audit log" in signal_client.sent[-1][1]
 
-    signal_client.queue_incoming(NUM_MARTIN, "3")
+    signal_client.queue_incoming(NUM_MARTIN, "4")
     _poll_once(signal_client, rotation, rc_driver, notifier)
     body = signal_client.sent[-1][1]
     assert "Audit log (last 3 months)" in body
@@ -982,7 +988,7 @@ def test_trip_report_gets_polite_reply_and_records_nothing(priests_config, state
 
 
 def _set_order(signal_client, rotation, rc_driver, notifier, *replies):
-    for text in ("SETTINGS", "5", *replies):
+    for text in ("SETTINGS", "6", *replies):
         signal_client.queue_incoming(NUM_MARTIN, text)
         _poll_once(signal_client, rotation, rc_driver, notifier)
 
@@ -1054,3 +1060,162 @@ def test_set_order_same_order_changes_nothing(priests_config, state_path):
     _set_order(signal_client, rotation, rc_driver, notifier, "123")
     assert signal_client.sent[-1][1] == "That is already the order. Nothing changed."
     assert rotation.pending_confirmation("fr_martin") is None
+
+
+def test_remove_priest_is_the_only_path_that_deletes_the_ring_leg(priests_config, state_path):
+    """Settings > Remove priest re-rings the others, then deletes the
+    removed priest's RingCentral leg. Nothing else calls delete_leg."""
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    calls: list = []
+
+    class DeletingDriver(RecordingDriver):
+        def apply_order(self, ordered_priests):
+            calls.append(("apply", [p["id"] for p in ordered_priests]))
+
+        def delete_leg(self, phone):
+            calls.append(("delete", phone))
+
+    rc_driver = DeletingDriver()
+    for msg in ("SETTINGS", "2", "1", "Y"):
+        signal_client.queue_incoming(NUM_MARTIN, msg)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+
+    assert calls[-1] == ("delete", NUM_BUGNINI)
+    assert calls[-2][0] == "apply" and "fr_bugnini" not in calls[-2][1]
+    assert [c for c in calls if c[0] == "delete"] == [("delete", NUM_BUGNINI)]
+
+
+def test_settings_restore_priest_brings_back_his_schedule(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = RecordingDriver()
+    rotation.set_day_off("fr_bugnini", "Thursday", triggered_by="test")
+    for msg in ("SETTINGS", "2", "1", "Y"):
+        signal_client.queue_incoming(NUM_MARTIN, msg)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert "fr_bugnini" not in [p["id"] for p in rotation.current_order()]
+
+    for msg in ("SETTINGS", "3"):
+        signal_client.queue_incoming(NUM_MARTIN, msg)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert "1. Fr Bugnini SSPX (916) 555-0002 (deleted " in signal_client.sent[-1][1]
+    for msg in ("1", "Y"):
+        signal_client.queue_incoming(NUM_MARTIN, msg)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+
+    back = [p for p in rotation.current_order() if p["id"] == "fr_bugnini"][0]
+    assert back["day_off"] == "Thursday" and back["rc_new"]
+    assert rotation.deleted_priests() == []
+    assert signal_client.sent[-1][0] == [NUM_BUGNINI]
+
+
+def test_settings_restore_with_nothing_deleted(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    for msg in ("SETTINGS", "3"):
+        signal_client.queue_incoming(NUM_MARTIN, msg)
+        _poll_once(signal_client, rotation, ManualModeDriver(), notifier)
+    assert signal_client.sent[-1][1] == "No priests were deleted in the last 30 days."
+
+
+NUM_NEWMAN = "+16195550009"
+
+
+class RingListDriver(RecordingDriver):
+    """RecordingDriver that also answers read_ring_list()."""
+
+    def __init__(self, legs) -> None:
+        super().__init__()
+        self.legs = legs
+        self.ring_reads = 0
+
+    def read_ring_list(self):
+        self.ring_reads += 1
+        return [{"phone": p, "name": n, "enabled": False, "duration": 20} for p, n in self.legs]
+
+
+def _ring_setup(priests_config, state_path, legs):
+    import app.signal_bot as bot
+
+    from app.localtime import effective_ring_date
+
+    bot._ring_lookup_misses.clear()
+    rotation = make_manager(priests_config, state_path)
+    rotation.mark_rc_check(effective_ring_date())  # today's 8 PM check already ran
+    signal_client = FakeSignalClient()
+    return rotation, signal_client, make_notifier(signal_client), RingListDriver(legs)
+
+
+def test_unknown_number_on_ring_is_added_and_walked_through_setup(priests_config, state_path):
+    rotation, signal_client, notifier, rc_driver = _ring_setup(
+        priests_config, state_path, [(NUM_MARTIN, "M"), (NUM_NEWMAN, "Fr. Newman")]
+    )
+    signal_client.queue_incoming(NUM_NEWMAN, "hello")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+
+    newman = next(p for p in rotation.current_order() if p["cell_number"] == NUM_NEWMAN)
+    assert not any("isn't authorized" in m for _, m in signal_client.sent)
+    to_others = [m for nums, m in signal_client.sent if NUM_MARTIN in nums]
+    assert any("Fr. Newman (619) 555-0009 was added in RingCentral" in m for m in to_others)
+    welcome = signal_client.sent[-1]
+    assert welcome[0] == [NUM_NEWMAN]
+    assert welcome[1].startswith("Welcome, Fr. Newman! Your name and number are on")
+    assert "SKIP ALL" in welcome[1] and "SETTINGS > 5 Availability" in welcome[1]
+    assert "1 of 3 - Day off" in welcome[1]
+
+    for reply in ("Monday", "2", "SKIP"):
+        signal_client.queue_incoming(NUM_NEWMAN, reply)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    newman = next(p for p in rotation.current_order() if p["id"] == newman["id"])
+    assert newman["day_off"] == "Monday"
+    assert newman["day_of_recollection"] == {"ordinal": 2}
+    assert "All set!" in signal_client.sent[-1][1]
+    assert rotation.pending_confirmation(newman["id"]) is None
+
+
+def test_welcome_setup_skip_all(priests_config, state_path):
+    rotation, signal_client, notifier, rc_driver = _ring_setup(
+        priests_config, state_path, [(NUM_NEWMAN, "Fr. Newman")]
+    )
+    for text in ("hi", "SKIP ALL"):
+        signal_client.queue_incoming(NUM_NEWMAN, text)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert signal_client.sent[-1][1].startswith("No problem - setup skipped.")
+    assert "SETTINGS > 5 Availability" in signal_client.sent[-1][1]
+
+
+def test_unknown_number_not_on_ring_is_rejected_and_not_looked_up_again(priests_config, state_path):
+    rotation, signal_client, notifier, rc_driver = _ring_setup(priests_config, state_path, [(NUM_MARTIN, "M")])
+    for _ in range(2):
+        signal_client.queue_incoming(NUM_NEWMAN, "hello")
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+        assert "isn't authorized" in signal_client.sent[-1][1]
+    assert rc_driver.ring_reads == 1
+
+
+def test_recently_deleted_priest_texting_from_ring_is_welcomed_back(priests_config, state_path):
+    rotation, signal_client, notifier, rc_driver = _ring_setup(
+        priests_config, state_path, [(NUM_BUGNINI, "Fr Bugnini SSPX")]
+    )
+    rotation.set_day_off("fr_bugnini", "Thursday", triggered_by="test")
+    rotation.remove_priest("fr_bugnini", triggered_by="test")
+    signal_client.queue_incoming(NUM_BUGNINI, "hello")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    back = next(p for p in rotation.current_order() if p["id"] == "fr_bugnini")
+    assert back["day_off"] == "Thursday"
+    assert signal_client.sent[-1][1].startswith("Welcome back")
+
+
+def test_unauthorized_reply_tells_a_new_priest_what_to_do(priests_config, state_path):
+    rotation, signal_client, notifier, rc_driver = _ring_setup(priests_config, state_path, [])
+    signal_client.queue_incoming(NUM_NEWMAN, "hello")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert signal_client.sent[-1] == (
+        [NUM_NEWMAN],
+        "Sorry, this number isn't authorized to manage the rotation. If you are a new priest, "
+        "please ask one of the other priests to add you to the system through the Signal bot.",
+    )

@@ -169,10 +169,24 @@ def create_app(config: dict | None = None) -> Flask:
     @require_auth
     def remove_priest():
         priest_id = request.form["id"].strip()
+        cell = next(
+            (p.get("cell_number") for p in rotation.current_order() if p["id"] == priest_id), None
+        )
         try:
             rotation.remove_priest(priest_id, triggered_by="web-dashboard")
         except RotationError as exc:
             notifier.alert(f"Remove priest failed: {exc}")
+            return redirect(url_for("dashboard"))
+        # Take him off the RingCentral ring too, or the 8 PM check
+        # (app/rc_sync.py) would read his leftover leg as a hand edit and
+        # add him back. Re-ring the others first so the line never rings nobody.
+        try:
+            rc_driver.apply_order(rotation.effective_order())
+            rotation.mark_applied_order([p["id"] for p in rotation.effective_order()])
+            if cell:
+                rc_driver.delete_leg(cell)
+        except RingCentralDriverError as exc:
+            notifier.alert(f"Removed {priest_id}, but RingCentral could not be updated: {exc}")
         return redirect(url_for("dashboard"))
 
     @app.route("/priests/swap", methods=["POST"])

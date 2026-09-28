@@ -86,6 +86,22 @@ class RingCentralDriver(abc.ABC):
         """
         return None
 
+    def read_ring_list(self) -> list[dict[str, Any]] | None:
+        """Every phone leg on the ring, in order, switched on or off:
+        [{"phone", "name", "enabled", "duration"}]. None when this driver
+        cannot read RingCentral (manual mode)."""
+        return None
+
+    def delete_leg(self, phone: str) -> None:
+        """Delete a priest's leg from the ring list entirely.
+
+        Only the Settings > Remove priest flow may call this, after the
+        priest confirmed the permanent-deletion warning. Rotation and
+        absences never delete; apply_order only toggles legs off.
+        Drivers that cannot write RingCentral do nothing.
+        """
+        return None
+
     def send_sms(self, to_numbers: list[str], message: str) -> None:
         """Send a regular SMS from the emergency-line number.
 
@@ -506,6 +522,21 @@ class CommHandlingApiDriver(_JwtAuthDriver):
         rule = self._fetch_rule(self._auth_headers(), "audit")
         return [phone for _, action, phone in self._ring_slots(rule) if action.get("enabled", True)]
 
+    def read_ring_list(self) -> list[dict[str, Any]]:
+        rule = self._fetch_rule(self._auth_headers(), "ring list")
+        ring = []
+        for _, action, phone in self._ring_slots(rule):
+            names = [t.get("name") for t in action.get("targets") or [] if t.get("name")]
+            ring.append(
+                {
+                    "phone": phone,
+                    "name": names[0] if names else "",
+                    "enabled": action.get("enabled", True),
+                    "duration": action.get("duration"),
+                }
+            )
+        return ring
+
     def apply_order(self, ordered_priests: list[dict[str, Any]]) -> None:
         # Hard stop: never send RingCentral a ring with nobody on it.
         # This check is ours, not theirs. An API version change cannot
@@ -541,11 +572,18 @@ class CommHandlingApiDriver(_JwtAuthDriver):
         # duration and any other portal-set flags survive a rotation.
         existing_by_phone = {phone: action for _, action, phone in slots}
         new_legs: list[dict[str, Any]] = []
+        skipped: list[str] = []
         for priest in ordered_priests:
             phone = priest["cell_number"]
             leg = dict(existing_by_phone.get(phone) or {})
             if leg:
                 leg["enabled"] = True
+            elif not priest.get("rc_new", True):
+                # He was on the ring before and someone deleted him by
+                # hand in RingCentral. Don't put him back; the 8 PM check
+                # (app/rc_sync.py) takes him off the roster to match.
+                skipped.append(phone)
+                continue
             else:
                 ring_count = int(priest.get("ringCount", priest.get("ring_count", 4)))
                 leg = {
@@ -561,6 +599,21 @@ class CommHandlingApiDriver(_JwtAuthDriver):
                     "duration": ring_count * self.SECONDS_PER_RING,
                 }
             new_legs.append(leg)
+
+        # A priest who is off (day off, vacation, retreat) keeps his leg
+        # on the rule, just toggled off, after the ringing legs. Deleting
+        # it would take him out of the portal list entirely.
+        if not new_legs:
+            raise RingCentralDriverError(
+                "Refusing to apply an empty ring: every priest in it was deleted by hand "
+                f"in RingCentral ({', '.join(skipped)})."
+            )
+        wanted_phones = {priest["cell_number"] for priest in ordered_priests}
+        for _, action, phone in slots:
+            if phone not in wanted_phones:
+                leg = dict(action)
+                leg["enabled"] = False
+                new_legs.append(leg)
 
         # Drop the old legs and drop the new ones into the same
         # positions, so prompts, screening, soft phones and voicemail
@@ -601,7 +654,7 @@ class CommHandlingApiDriver(_JwtAuthDriver):
 
         # Read back: an accepted-but-unapplied PATCH must not be
         # reported as a rotation that happened.
-        wanted = [p["cell_number"] for p in ordered_priests]
+        wanted = [p["cell_number"] for p in ordered_priests if p["cell_number"] not in skipped]
         live = self.read_order()
         if live != wanted:
             raise RingCentralDriverError(
@@ -609,6 +662,42 @@ class CommHandlingApiDriver(_JwtAuthDriver):
                 f"(wanted {wanted}, live {live})."
             )
         logger.info("Call Handling API: ring order updated and verified successfully.")
+
+    def delete_leg(self, phone: str) -> None:
+        headers = self._auth_headers()
+        rule = self._fetch_rule(headers, "pre-delete lookup")
+        dispatching = dict(rule.get("dispatching") or {})
+        slots = self._ring_slots(rule)
+        doomed = [index for index, _, slot_phone in slots if slot_phone == phone]
+        if not doomed:
+            return
+        if all(index in doomed or not action.get("enabled", True) for index, action, _ in slots):
+            raise RingCentralDriverError(
+                "Refusing to delete the only ringing priest; the line would ring nobody."
+            )
+        actions = [a for i, a in enumerate(dispatching.get("actions") or []) if i not in doomed]
+        if not _has_voicemail_target(actions):
+            raise RingCentralDriverError(
+                "Refusing to write a call flow with no VoiceMailTerminatingTarget; "
+                "the caller would have nowhere to land."
+            )
+        dispatching["actions"] = actions
+        resp = requests.patch(
+            self._endpoint(),
+            json={"dispatching": dispatching},
+            headers=headers,
+            timeout=self.timeout_seconds,
+        )
+        if not resp.ok:
+            raise RingCentralDriverError(
+                f"Call Handling API PATCH failed: {resp.status_code} {resp.text}"
+            )
+        after = self._fetch_rule(headers, "post-delete check")
+        if any(slot_phone == phone for _, _, slot_phone in self._ring_slots(after)):
+            raise RingCentralDriverError(
+                f"RingCentral accepted the deletion of {phone} but did not apply it."
+            )
+        logger.info("Call Handling API: ring leg deleted and verified.")
 
 
 COMMON_API_KEYS = [
