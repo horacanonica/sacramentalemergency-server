@@ -289,6 +289,24 @@ SKIP ALL at any point skips the rest; all of it is under SETTINGS > 5 Availabili
 
 A priest deleted in the last 30 days gets his old schedule back and a "Welcome back" instead.
 
+## Calls to the line
+
+The bot reads RingCentral's call log every minute.
+
+- **Missed call, no voicemail:** the priests on the line get a text right away, day or night,
+  with the caller's number, the time, and which phones rang, so someone can call back. It is
+  never treated as spam, however many times the same number calls.
+- **`CALLS`:** calls in the last 24 hours, with full numbers. **`CALLS 30`:** the last 30 days
+  (last 4 digits only). **`CALLS REPORT`:** statistics for the year so far, plus a spreadsheet file.
+- **Monthly summary (1st of the month) and yearly summary (1 January):** call totals, who was
+  #1 and for how many days, who answered.
+- **How calls arrive:** callers dial the main parish number and press 1, or a secretary answers the
+  main number and transfers them to Ext. 1. The log records which, and who transferred the call, so
+  a missed-call text says "transferred by Secretary (Bookstore) - they may know who it was".
+- **Privacy:** full caller numbers are kept only for 24 hours. After that, only the last 4 digits
+  and an anonymous caller code are kept. RingCentral's own app still shows full numbers in the
+  line's call history.
+
 ## Menu tree: SETTINGS
 
 ```

@@ -99,6 +99,33 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 - Failsafe texts everyone (including muted). Routine broadcasts skip muted priests.
 - Errors and a dead Signal daemon also SMS the priest cells via RingCentral from the emergency-line number, prefixed `Emergency Line bot:`.
 - Do not put Tailscale IPs, dashboard passwords, or other-project paths in priest-facing docs.
+- Call log (`app/call_log.py`, added 27 Sep 2026): every minute the scheduler reads new
+  incoming calls from RingCentral's call log (read-only). `data/call-log.jsonl` keeps only
+  the caller's LAST 4 DIGITS plus an anonymous HMAC fingerprint (`data/call-fp.key`);
+  `data/calls-recent.jsonl` has full numbers and is pruned to 24 hours. Never put full
+  numbers anywhere else (journal, reports, digests, git). A call with no pickup and no
+  voicemail (RingCentral result Missed/Blocked/etc.) is NEVER treated as spam: the
+  priests on the line (everyone if nobody is) get an immediate Signal text, any hour,
+  muted or not, SMS fallback if Signal is down; repeat calls each get their own text.
+  The first sync imports the year to date silently. Short "Call connected" FindMe legs
+  (< 40 s) on missed calls are the priest's own phone voicemail, not a pickup.
+  Callers reach Ext. 1 (the only extension this app touches) from the main parish
+  number (MainCompanyNumber) by pressing 1, or a secretary answers the main number
+  and transfers them: the TransferCall leg names that staff member (`via`), the call
+  did NOT go out to staff (verified in the account-wide call log, 27 Sep 2026). Staff
+  calling Ext. 1 internally show an extensionNumber and no phone number (`internal`).
+  Former priests are named from `config/former-priests.yaml` (last 4 → name; not an
+  allowlist; git-ignored); regular callers from `config/known-callers.yaml` (last 4 →
+  label, e.g. a hospital's chaplains); staff who left are shown by job title
+  via `config/staff-titles.yaml` (old RingCentral name → title). After editing these,
+  re-import to relabel old calls: move `data/call-log.jsonl` and `data/call-sync.json`
+  aside; the next sync imports the year again without alerts.
+  `CALLS` / `CALLS <days>` / `CALLS REPORT` in Signal; `sacline` → c.
+- Days as #1 (`app/ring_history.py`): replays RingCentral's audit trail of Ext. 1 ring
+  changes (order, on/off, add/remove; kept ~6 months by RingCentral, copied hourly to
+  `data/ring-history.jsonl` and kept for good). Before the audit trail starts (1 Apr
+  2026) it is estimated from each call's first-rung phone. Every stats text reports
+  how many calls agree with the timeline (113/113 when built, 28 Sep 2026).
 - Troubleshooting stays safe: the Signal wizard offers nothing destructive (no backup restores,
   no code rollbacks; those are `sacline` only, with confirmation). Every fix is journaled. Reports
   go through `doctor.mask()` (phones to last 4 digits, IPs and tokens removed) and never read `.env`.

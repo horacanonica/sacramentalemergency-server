@@ -115,6 +115,16 @@ This lets an AI read the bot's code on the server and fix it with you.
 6. When you're done, sign out and uninstall it (the installer prints how). Personal accounts
    should not stay on the server.
 
+## Calls to the line
+
+- Text **CALLS** for the last 24 hours, with full numbers. **CALLS 30** gives the last 30 days
+  (last 4 digits only). **CALLS REPORT** gives statistics plus a spreadsheet.
+- On the server: `sudo sacline` → **c**.
+- In the RingCentral app, signed in as the Sacramental Emergency Line extension: the call history
+  shows full numbers for as long as RingCentral keeps them.
+- Missed calls with no voicemail are texted to the priests on the line automatically. If those
+  texts stop, check `sacline` → 1 (the bot must be running and able to reach RingCentral).
+
 ## Where things are (for the AI or a helper)
 
 | What | Where |
@@ -123,6 +133,7 @@ This lets an AI read the bot's code on the server and fix it with you.
 | Event log (every switch, failure, fix) | `data/ops-journal.jsonl` |
 | Bot log | `data/app.log`, or `docker compose logs rotation-app` |
 | Reports | `data/reports/` (kept 30 days) |
+| Call log | `data/call-log.jsonl` (last 4 digits), `data/calls-recent.jsonl` (full numbers, 24 hours) |
 | Saved state | `data/state.json` (previous save: `state.json.bak`) |
 | Priest list / allowlist | `config/priests.yaml` |
 | Server checks | `sudo /usr/local/lib/sacline/watchdog.py --status` |

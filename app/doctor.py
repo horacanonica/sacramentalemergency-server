@@ -205,6 +205,8 @@ def resend_ring(rotation: RotationManager, rc_driver: RingCentralDriver, by: str
     rotation.mark_applied_order([p["id"] for p in order])
     names = " -> ".join(p["name"] for p in order)
     journal(rotation, "doctor_fix", "Re-sent ring to RingCentral: " + names, by=by)
+    journal(rotation, "rc_write", "Ring order written: " + names,
+            first=order[0]["name"] if order else None, order=[p["name"] for p in order])
     return True, f"Sent to RingCentral: {names}."
 
 
@@ -434,7 +436,12 @@ def maybe_send_monthly_digest(rotation: RotationManager, signal_client: Any, now
               if as_california_datetime(datetime.fromisoformat(e["ts"])) < month_start]
     admin = next((p.get("cell_number") for p in rotation.current_order() if p.get("audit_notices")), None)
     if admin and signal_client is not None:
-        signal_client.send([admin], digest_text(events, f"{prev_start:%B %Y}"))
+        from app.call_log import names_by_last4, stats_text  # call_log imports nothing from doctor
+
+        text = digest_text(events, f"{prev_start:%B %Y}")
+        text += "\n\n" + stats_text(data_dir, prev_start, month_start, f"{prev_start:%B %Y}",
+                                     names=names_by_last4(rotation))
+        signal_client.send([admin], text)
     journal(rotation, "monthly_digest", f"Monthly summary for {prev_start:%B %Y} sent", events=len(events))
     prune(data_dir)
     return True

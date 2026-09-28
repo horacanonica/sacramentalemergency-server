@@ -20,6 +20,7 @@ import time
 from datetime import date, datetime
 
 from app.audit import maybe_run_weekly_audit
+from app.call_log import maybe_send_yearly_report, sync_and_alert
 from app.doctor import maybe_send_monthly_digest
 from app.failsafe import enter_manual_failsafe
 from app.localtime import california_now, effective_ring_date
@@ -74,6 +75,10 @@ def run_daily_loop(
             now = california_now()
             maybe_run_weekly_audit(rotation, signal_client, rc_driver, now, notifier=notifier)
             maybe_send_monthly_digest(rotation, signal_client, now)
+            maybe_send_yearly_report(rotation, signal_client, now)
+            # New calls from RingCentral; missed calls with no voicemail
+            # are texted to the priests at once. Never raises.
+            sync_and_alert(rotation, signal_client, rc_driver)
             if not rotation.audit_in_progress:
                 _maybe_send_cover_prompts(rotation, signal_client, ring_day, now)
                 check_signal_health(rotation, signal_client, notifier)

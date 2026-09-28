@@ -177,6 +177,13 @@ def check_rc_hand_edits(
             names = {p["id"]: p["name"] for p in rotation.current_order()}
             changes.append("ring order now " + " -> ".join(names[i] for i in live))
 
+    # Daily record of who RingCentral had first, for "days as #1" (app/call_log.py).
+    live_first = next((l for l in ring if l["enabled"]), None)
+    if live_first is not None:
+        first_name = next((p["name"] for p in roster if _digits(p.get("cell_number")) == _digits(live_first["phone"])),
+                          live_first["name"] or live_first["phone"])
+        journal(rotation, "ring_snapshot", f"8 PM: RingCentral had {first_name} first", first=first_name)
+
     if not changes:
         rotation.log_event("rc_check", TRIGGERED_BY, reason="no change")
         journal(rotation, "rc_check", "8 PM check: no change")

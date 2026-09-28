@@ -59,7 +59,8 @@ def test_resend_ring_fixes_mismatch_and_is_journaled(priests_config, state_path)
     driver = RingDriver([(YOUNGTRAD, "Y", True), (MARTIN, "M", True), (BUGNINI, "B", True)])
     ok, _ = doctor.resend_ring(rotation, driver, by="test")
     assert ok and doctor.check_ring(rotation, driver).ok
-    assert read(state_path.parent)[-1]["kind"] == "doctor_fix"
+    kinds = [e["kind"] for e in read(state_path.parent)]
+    assert "doctor_fix" in kinds and kinds[-1] == "rc_write"
 
 
 def test_switching_check_reports_failsafe_reason(priests_config, state_path):

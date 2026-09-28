@@ -34,6 +34,7 @@ from __future__ import annotations
 import abc
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -86,6 +87,17 @@ class RingCentralDriver(abc.ABC):
         """
         return None
 
+    def read_call_log(self, date_from: str, date_to: str | None = None) -> list[dict[str, Any]] | None:
+        """Incoming voice calls to the line (RingCentral call log, detailed
+        view with legs), newest first. Read-only. None in manual mode."""
+        return None
+
+    def read_audit_trail(self, since: str) -> list[dict[str, Any]] | None:
+        """Account audit-trail entries since `since` (ISO, UTC), oldest
+        first: who changed what, when. Read-only (a search). None in
+        manual mode."""
+        return None
+
     def read_ring_list(self) -> list[dict[str, Any]] | None:
         """Every phone leg on the ring, in order, switched on or off:
         [{"phone", "name", "enabled", "duration"}]. None when this driver
@@ -108,6 +120,10 @@ class RingCentralDriver(abc.ABC):
         Manual mode is a no-op. Failures raise RingCentralDriverError.
         """
         return None
+
+
+CALL_LOG_PAGE_SIZE = 250
+CALL_LOG_MAX_PAGES = 40
 
 
 class ManualModeDriver(RingCentralDriver):
@@ -214,6 +230,55 @@ class _JwtAuthDriver(RingCentralDriver):
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+
+    def read_audit_trail(self, since: str) -> list[dict[str, Any]]:
+        url = f"{self.server_url}/restapi/v1.0/account/~/audit-trail/search"
+        until = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        records: list[dict[str, Any]] = []
+        for page in range(1, CALL_LOG_MAX_PAGES + 1):
+            resp = requests.post(
+                url,
+                headers=self._auth_headers(),
+                json={"eventTimeFrom": since, "eventTimeTo": until, "page": page, "perPage": 100,
+                      "includeAdmins": True, "includeHidden": True},
+                timeout=self.timeout_seconds,
+            )
+            if not resp.ok:
+                raise RingCentralDriverError(f"Audit trail read failed: {resp.status_code} {resp.text[:300]}")
+            batch = resp.json().get("records") or []
+            records.extend(batch)
+            if len(batch) < 100:
+                break
+        return sorted(records, key=lambda r: r.get("eventTime", ""))
+
+    def read_call_log(self, date_from: str, date_to: str | None = None) -> list[dict[str, Any]]:
+        """Pages through the extension's call log (inbound voice, detailed
+        view, so each call carries its legs: the ring order at the time,
+        each phone's result, voicemail). Read-only."""
+        url = (
+            f"{self.server_url}/restapi/v1.0/account/~/extension/"
+            f"{self.extension_id}/call-log"
+        )
+        params: dict[str, Any] = {
+            "direction": "Inbound",
+            "type": "Voice",
+            "view": "Detailed",
+            "dateFrom": date_from,
+            "perPage": CALL_LOG_PAGE_SIZE,
+        }
+        if date_to:
+            params["dateTo"] = date_to
+        records: list[dict[str, Any]] = []
+        for page in range(1, CALL_LOG_MAX_PAGES + 1):
+            params["page"] = page
+            resp = requests.get(url, headers=self._auth_headers(), params=params, timeout=self.timeout_seconds)
+            if not resp.ok:
+                raise RingCentralDriverError(f"Call log read failed: {resp.status_code} {resp.text[:300]}")
+            body = resp.json()
+            records.extend(body.get("records") or [])
+            if not (body.get("navigation") or {}).get("nextPage"):
+                break
+        return records
 
     def send_sms(self, to_numbers: list[str], message: str) -> None:
         if not self.sms_from:

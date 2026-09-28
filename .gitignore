@@ -9,6 +9,9 @@ venv/
 # Never commit these. See config/priests.example.yaml and .env.example.
 .env
 config/priests.yaml
+config/former-priests.yaml
+config/known-callers.yaml
+config/staff-titles.yaml
 data/
 signal-cli-data/
 

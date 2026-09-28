@@ -149,6 +149,30 @@ do_review() {
 
 do_ai() { "$PROJECT/ops/install-ai-assistant.sh"; }
 
+calls_cli() {
+    if running; then
+        "${COMPOSE[@]}" exec -T rotation-app python -m app.call_log "$@"
+    else
+        "${COMPOSE[@]}" run --rm -T --no-deps --entrypoint python rotation-app -m app.call_log "$@"
+    fi
+}
+
+do_calls() {
+    bold "Call log for the Emergency Line"
+    echo "a) calls in the last 24 hours, with FULL phone numbers (shown on screen only)"
+    echo "b) spreadsheet (CSV) of every call this year, last 4 digits only"
+    echo "c) statistics for a year or a month"
+    local c; read -r -p "a, b, c, or Enter to cancel: " c
+    case "${c,,}" in
+      a) calls_cli recent ;;
+      b) local out="$PROJECT/data/reports/calls-$(date +%Y%m%d-%H%M%S).csv"
+         mkdir -p "$PROJECT/data/reports"
+         calls_cli csv > "$out" && echo "Saved: $out" ;;
+      c) local p; read -r -p "Year (e.g. 2026) or month (e.g. 2026-09): " p
+         calls_cli stats "${p:-$(date +%Y)}" ;;
+    esac
+}
+
 menu() {
     while true; do
         clear
@@ -164,6 +188,7 @@ menu() {
   7  Restore everything from the USB backup (instructions)
   8  Operations review packet (3-month review)
   9  Install an AI assistant (Gemini CLI free / Claude Code / Codex)
+  c  Call log: last 24 hours, spreadsheet, statistics
   h  Help: open docs/TROUBLESHOOTING.md
   q  Quit
 
@@ -174,6 +199,7 @@ EOF
           1) do_status; pause ;;  2) do_report; pause ;;  3) do_restart; pause ;;
           4) do_resend; pause ;;  5) do_restore_state; pause ;;  6) do_rollback; pause ;;
           7) do_usb; pause ;;     8) do_review; pause ;;  9) do_ai; pause ;;
+          c|C) do_calls; pause ;;
           h|H) less "$PROJECT/docs/TROUBLESHOOTING.md" ;;
           q|Q|"") exit 0 ;;
         esac
@@ -183,6 +209,6 @@ EOF
 case "${1:-menu}" in
   menu) menu ;;
   status) do_status ;;  report) do_report ;;  restart) do_restart ;;
-  resend) do_resend ;;  review) do_review ;;  ai) do_ai ;;
-  *) echo "Usage: sudo sacline [status|report|restart|resend|review|ai]"; exit 2 ;;
+  resend) do_resend ;;  review) do_review ;;  ai) do_ai ;;  calls) do_calls ;;
+  *) echo "Usage: sudo sacline [status|report|restart|resend|review|ai|calls]"; exit 2 ;;
 esac
