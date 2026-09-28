@@ -72,6 +72,7 @@ cid() { docker ps -q --filter label=com.docker.compose.project=sacramental-line-
                     --filter label=com.docker.compose.service=rotation-app --filter status=running; }
 
 tell() {  # $1 = --signal-only | --all ; $2 = message
+    python3 "$LIB/journal_append.py" signal_update "$2" || true
     local c flag=()
     [ "$1" = --signal-only ] && flag=(--signal-only)
     c=$(cid)

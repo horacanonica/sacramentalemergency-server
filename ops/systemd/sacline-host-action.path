@@ -1,0 +1,9 @@
+[Unit]
+Description=Run a restart as soon as the TROUBLESHOOT wizard asks for one
+
+[Path]
+PathChanged=/home/padre/sacramental-line-rotation/data/host-request.json
+Unit=sacline-host-action.service
+
+[Install]
+WantedBy=paths.target

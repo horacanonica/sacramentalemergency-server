@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from app.failsafe import enter_manual_failsafe
+from app.ops_journal import journal
 from app.localtime import as_california_datetime, format_california, week_monday
 from app.ringcentral_client import RingCentralDriver, RingCentralDriverError
 from app.rotation import RotationError, RotationManager
@@ -329,6 +330,7 @@ def maybe_run_weekly_audit(
     rotation.mark_weekly_audit(week)
     if health:
         rotation.record_audit_result("fail", health, week, checks=["health"])
+        journal(rotation, "audit_fail", "Monday self-audit failed (health)", problems=health)
         reason = "Monday self-audit found an error. " + " ".join(health)
         logger.error(reason)
         enter_manual_failsafe(rotation, signal_client, rc_driver, reason, notifier=notifier)
@@ -360,11 +362,13 @@ def maybe_run_weekly_audit(
 
     if problems:
         rotation.record_audit_result("fail", problems, week, checks=FUNCTIONAL_CHECKS)
+        journal(rotation, "audit_fail", "Monday self-audit failed", problems=problems)
         reason = "Monday self-audit found an error. " + " ".join(problems)
         logger.error(reason)
         enter_manual_failsafe(rotation, signal_client, rc_driver, reason, notifier=notifier)
         return True
 
     rotation.record_audit_result("pass", [], week, checks=FUNCTIONAL_CHECKS)
+    journal(rotation, "audit_pass", "Monday self-audit passed")
     _announce_success(rotation, signal_client)
     return True

@@ -315,7 +315,15 @@ def main() -> int:
     if recovered:
         parts.append("Fixed now: " + ", ".join(recovered) + ".")
     if parts:
+        parts.append("To check and fix common problems, text TROUBLESHOOT to the bot, "
+                     "or have someone run: sudo sacline  on the server.")
         ok, detail = send_alert("\n\n".join(parts))
+        sys.path.insert(0, str(LIB))
+        from journal_append import append as journal_append
+        for n in to_alert:
+            journal_append("watchdog_alert", results[n] or n, check=n, delivered=str(ok))
+        for n in recovered:
+            journal_append("watchdog_recovered", f"Fixed now: {n}", check=n)
         print(f"alert {'sent' if ok else 'FAILED'}: {detail}")
         if ok:
             for n in to_alert:

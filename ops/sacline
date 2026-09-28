@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# sacline - the server's troubleshooting menu. For when the Signal bot's
+# own TROUBLESHOOT wizard can't help (e.g. the bot or Signal is down).
+# Installed to /usr/local/bin/sacline by ops/install.sh. Run:
+#
+#   sudo sacline            the menu
+#   sudo sacline status     one option directly (status|report|restart|
+#                           resend|review|ai)
+#
+# Every option says what it will do and asks before changing anything.
+set -uo pipefail
+
+PROJECT=/home/padre/sacramental-line-rotation
+LIB=/usr/local/lib/sacline
+COMPOSE=(docker compose --project-directory "$PROJECT" -f "$PROJECT/docker-compose.yml")
+GIT=(git -c safe.directory="$PROJECT" -C "$PROJECT")
+
+[ "$(id -u)" -eq 0 ] || { echo "Please run it with sudo:  sudo sacline"; exit 1; }
+
+bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ask()  { local a; read -r -p "$1 [y/N] " a; [ "${a,,}" = y ]; }
+pause() { read -r -p $'\nPress Enter to go back to the menu. ' _; }
+running() { [ -n "$(docker ps -q --filter label=com.docker.compose.project=sacramental-line-rotation \
+                      --filter label=com.docker.compose.service=rotation-app --filter status=running)" ]; }
+
+# Run app/doctor.py inside the bot's image: in the running bot if it is up,
+# otherwise in a throwaway copy (which never starts Signal).
+in_app() {
+    if running; then
+        "${COMPOSE[@]}" exec -T rotation-app python -m app.doctor "$@"
+    else
+        "${COMPOSE[@]}" run --rm -T --no-deps --entrypoint python rotation-app -m app.doctor "$@"
+    fi
+}
+
+wait_for_bot() {
+    local start=$1
+    for _ in $(seq 1 30); do
+        if "${COMPOSE[@]}" logs --since "$start" rotation-app 2>/dev/null | grep -q "Signal bot listening"; then
+            echo "The bot is up and Signal is connected."; return 0
+        fi
+        sleep 3
+    done
+    echo "The bot did not report Signal as connected within 90 seconds. Try option 1 (status) or 2 (report)."
+    return 1
+}
+
+do_status() {
+    bold "Server checks"
+    "$LIB/watchdog.py" --status 2>/dev/null || echo "(watchdog not installed - run: sudo $PROJECT/ops/install.sh)"
+    bold "Bot checks"
+    in_app checks
+    echo
+    running && echo "The bot container is RUNNING." || echo "The bot container is NOT running (option 3 starts it)."
+}
+
+server_details() {
+    echo "--- docker compose ps"; "${COMPOSE[@]}" ps 2>&1
+    echo "--- watchdog"; "$LIB/watchdog.py" --status 2>&1
+    echo "--- timers"; systemctl list-timers --no-pager 'sacline-*' 2>&1
+    echo "--- failed services"; systemctl --failed --no-pager 2>&1
+    echo "--- disk / memory / uptime"; df -h / 2>&1; free -h 2>&1; uptime
+    echo "--- code version"; "${GIT[@]}" log -5 --format='%h %ad %s' --date=short 2>&1
+    echo "--- files changed since that version"; "${GIT[@]}" status --short 2>&1
+    echo "--- container log (last 200 lines, dashboard requests left out)"
+    "${COMPOSE[@]}" logs --no-color --tail 400 rotation-app 2>&1 | grep -v werkzeug | tail -200
+}
+
+do_report() {
+    bold "Making a report (phone numbers shortened, no passwords)"
+    local path
+    path=$(server_details | in_app report | tail -1)
+    path="$PROJECT/data/${path#/app/data/}"
+    echo "Saved: $path"
+    echo
+    echo "Give this file to an AI assistant (see option 9), or copy it off the server and upload"
+    echo "it to any AI chat with: \"What is wrong with our emergency line bot and how do I fix it?\""
+    ask "Show it now?" && less "$path"
+}
+
+do_restart() {
+    bold "Restart the bot"
+    echo "The phone line keeps ringing during the restart (about a minute)."
+    ask "Restart now?" || return
+    local start; start=$(date -Is)
+    if running; then "${COMPOSE[@]}" restart rotation-app; else "${COMPOSE[@]}" up -d; fi
+    python3 "$LIB/journal_append.py" host_action "restart-bot from sacline" >/dev/null 2>&1
+    wait_for_bot "$start"
+}
+
+do_resend() {
+    bold "Re-send today's ring order to RingCentral"
+    echo "Use this when RingCentral rings the wrong priest and the bot's order (STATUS) is right."
+    ask "Send the bot's order to RingCentral now?" || return
+    in_app resend
+}
+
+do_restore_state() {
+    bold "Restore the bot's saved data from the previous save"
+    echo "Only for 'saved data damaged' problems. The last change made before the damage may be lost."
+    ls -l "$PROJECT/data/state.json" "$PROJECT/data/state.json.bak" 2>&1
+    ask "Stop the bot, keep the current file aside, and use the previous save?" || return
+    local ts; ts=$(date +%Y%m%d-%H%M%S)
+    "${COMPOSE[@]}" stop rotation-app
+    cp -a "$PROJECT/data/state.json" "$PROJECT/data/state.json.damaged-$ts" 2>/dev/null
+    cp -a "$PROJECT/data/state.json.bak" "$PROJECT/data/state.json"
+    python3 "$LIB/journal_append.py" host_action "state.json restored from .bak via sacline" kept="state.json.damaged-$ts"
+    local start; start=$(date -Is)
+    "${COMPOSE[@]}" up -d
+    wait_for_bot "$start"
+}
+
+do_rollback() {
+    bold "Go back to an earlier version of the bot's program"
+    "${GIT[@]}" log -6 --format='  %h  %ad  %s' --date=short
+    echo
+    echo "a) back ONE version (undoes the newest change above)"
+    echo "b) return to the NEWEST version (undo a rollback)"
+    local c; read -r -p "a, b, or Enter to cancel: " c
+    case "${c,,}" in
+      a) ask "Put the program back one version and rebuild (~5 minutes; the line keeps ringing)?" || return
+         "${GIT[@]}" checkout HEAD~1 -- app ops tests Dockerfile requirements.txt ;;
+      b) ask "Return to the newest version and rebuild?" || return
+         "${GIT[@]}" checkout HEAD -- app ops tests Dockerfile requirements.txt ;;
+      *) return ;;
+    esac
+    python3 "$LIB/journal_append.py" host_action "program version change via sacline ($c)"
+    local start; start=$(date -Is)
+    "${COMPOSE[@]}" up -d --build && wait_for_bot "$start"
+    echo "Note: 'git status' now shows the rolled-back files as changed until option 6b."
+}
+
+do_usb() {
+    bold "Restore everything from the USB backup drive"
+    echo "This is the full disaster-recovery procedure (new machine or wiped disk)."
+    echo "It is written out step by step in: $PROJECT/ops/RESTORE.md (a copy is also on the drive)."
+    ask "Open it now?" && less "$PROJECT/ops/RESTORE.md"
+}
+
+do_review() {
+    bold "Operations review packet (for the 3-month review)"
+    local days; read -r -p "How many days back? [90] " days
+    local path; path=$(in_app review "${days:-90}" | tail -1)
+    echo "Saved: $PROJECT/data/${path#/app/data/}"
+    echo "Give this file to Claude (or another AI assistant) with:"
+    echo "  \"Read CLAUDE.md and this review packet. Find recurring problems and add fixes for them"
+    echo "   to the TROUBLESHOOT wizard and the sacline menu.\""
+}
+
+do_ai() { "$PROJECT/ops/install-ai-assistant.sh"; }
+
+menu() {
+    while true; do
+        clear
+        cat <<'EOF'
+ Sacramental Emergency Line - server menu
+ ========================================
+  1  Status: check everything (changes nothing)
+  2  Make a report for an AI assistant or helper
+  3  Restart the bot
+  4  Re-send today's ring order to RingCentral
+  5  Restore the bot's saved data from the previous save
+  6  Go back to an earlier version of the program
+  7  Restore everything from the USB backup (instructions)
+  8  Operations review packet (3-month review)
+  9  Install an AI assistant (Gemini CLI free / Claude Code / Codex)
+  h  Help: open docs/TROUBLESHOOTING.md
+  q  Quit
+
+ The phone line keeps ringing no matter what happens here.
+EOF
+        local c; read -r -p " Choose: " c
+        case "$c" in
+          1) do_status; pause ;;  2) do_report; pause ;;  3) do_restart; pause ;;
+          4) do_resend; pause ;;  5) do_restore_state; pause ;;  6) do_rollback; pause ;;
+          7) do_usb; pause ;;     8) do_review; pause ;;  9) do_ai; pause ;;
+          h|H) less "$PROJECT/docs/TROUBLESHOOTING.md" ;;
+          q|Q|"") exit 0 ;;
+        esac
+    done
+}
+
+case "${1:-menu}" in
+  menu) menu ;;
+  status) do_status ;;  report) do_report ;;  restart) do_restart ;;
+  resend) do_resend ;;  review) do_review ;;  ai) do_ai ;;
+  *) echo "Usage: sudo sacline [status|report|restart|resend|review|ai]"; exit 2 ;;
+esac

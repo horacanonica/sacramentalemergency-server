@@ -1,0 +1,9 @@
+[Unit]
+Description=Sacramental Line: carry out a TROUBLESHOOT restart request
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/sacline/host_action.sh
+TimeoutStartSec=5min

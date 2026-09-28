@@ -14,6 +14,7 @@
 #   2. unattended-upgrades: Debian + security + Docker + Tailscale updates,
 #      automatic reboot at midnight only when an update needs one.
 #   3. systemd timers: backup 2:30 AM nightly, watchdog every 5 minutes,
+#      the TROUBLESHOOT restart trigger, the `sacline` menu,
 #      signal-cli version check Tuesdays 10 AM (the bot asks the priests
 #      Y/N only when a newer version exists; Y installs it automatically),
 #      and a boot-time check that starts the bot if it was left stopped.
@@ -143,6 +144,10 @@ install -m 644 "$OPS/send_alert.py" "$LIB/send_alert.py"
 install -m 755 "$OPS/signal_update_check.py" "$LIB/signal_update_check.py"
 install -m 755 "$OPS/signal_update.sh" "$LIB/signal_update.sh"
 install -m 755 "$OPS/boot_start.sh" "$LIB/boot_start.sh"
+install -m 755 "$OPS/host_action.sh" "$LIB/host_action.sh"
+install -m 755 "$OPS/journal_append.py" "$LIB/journal_append.py"
+# The troubleshooting menu: sudo sacline
+install -m 755 "$OPS/sacline" /usr/local/bin/sacline
 install -m 644 "$OPS"/systemd/sacline-*.service "$OPS"/systemd/sacline-*.timer "$OPS"/systemd/sacline-*.path /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now sacline-watchdog.timer >/dev/null
@@ -151,6 +156,8 @@ systemctl enable sacline-boot-start.service >/dev/null
 # Weekly signal-cli check (Tue 10 AM; silent unless there's a new version)
 # and the Y-answer trigger for the automatic update.
 systemctl enable --now sacline-signal-check.timer sacline-signal-update.path sacline-signal-update.timer >/dev/null
+# Restart requests from the Signal TROUBLESHOOT wizard (data/host-request.json).
+systemctl enable --now sacline-host-action.path >/dev/null
 
 if [ -f "$CONF" ]; then
     systemctl enable --now sacline-backup.timer >/dev/null

@@ -22,6 +22,7 @@ import re
 from datetime import date
 from typing import Any
 
+from app.ops_journal import journal
 from app.onboarding import WELCOME_BACK_TEXT, start_welcome_setup
 from app.ringcentral_client import RingCentralDriver
 from app.rotation import RotationError, RotationManager
@@ -94,6 +95,7 @@ def check_rc_hand_edits(
     except Exception as exc:  # noqa: BLE001 - the 8 PM switch must still run
         logger.exception("8 PM RingCentral check could not read the ring")
         rotation.log_event("rc_check", TRIGGERED_BY, reason=f"could not read RingCentral: {exc}")
+        journal(rotation, "rc_check_failed", "8 PM check could not read RingCentral", error=str(exc))
         return []
     if ring is None:
         return []
@@ -177,9 +179,11 @@ def check_rc_hand_edits(
 
     if not changes:
         rotation.log_event("rc_check", TRIGGERED_BY, reason="no change")
+        journal(rotation, "rc_check", "8 PM check: no change")
         return []
 
     rotation.log_event("rc_check", TRIGGERED_BY, reason="hand edits in RingCentral adopted", changes=changes)
+    journal(rotation, "rc_hand_edits", "8 PM check adopted hand edits in RingCentral", changes=changes)
     logger.info("8 PM RingCentral check adopted: %s", changes)
     if signal_client is not None:
         message = (

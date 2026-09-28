@@ -39,6 +39,8 @@ from app.localtime import (
     format_california,
 )
 from app.notifier import Notifier
+from app import doctor, troubleshoot
+from app.ops_journal import journal
 from app.onboarding import LATER_NOTE, NEXT_STEP, STEP_PROMPTS, WELCOME_BACK_TEXT, WELCOME_SETUP
 from app.rc_sync import admit_ring_leg, check_rc_hand_edits, send_welcome
 from app.ringcentral_client import RingCentralDriver, RingCentralDriverError
@@ -63,6 +65,7 @@ HELP_TEXT = (
     "STATUS - show the current ring order\n"
     "DISABLE / ENABLE - turn automatic day-off/vacation/recollection disabling off/on for everyone\n"
     "SETTINGS - availability, set the order, add, remove or restore a priest, audit log\n"
+    "TROUBLESHOOT - something's wrong? Checks and fixes common problems, or sends a report\n"
     "ABOUT - a full explanation of how this all works\n"
     "HELP - show this message\n"
     "CANCEL - leave any menu without saving"
@@ -260,6 +263,8 @@ def _format_about() -> str:
         "everyone at once (e.g. if the line truly needs full coverage regardless of anyone's normal "
         "schedule). Text ENABLE to turn it back on - the live ring is immediately updated to whoever "
         "should be covering right now (including a day off or recollection that started while it was off).\n\n"
+        "Something wrong? Text TROUBLESHOOT: it checks the usual problems, fixes what it safely can, "
+        "and can send you a full report to give to an AI chat or whoever looks after the server.\n\n"
         "Anytime: STATUS shows the current order, HELP shows the short command list, ABOUT shows this."
     )
 
@@ -270,12 +275,15 @@ def _try_apply_effective_order(
     """Push the availability-filtered ring to RingCentral. Returns True
     if the live line now matches (or the driver is a no-op). On failure
     last_applied_order is left unchanged so the next poll retries."""
+    names = [p["name"] for p in rotation.effective_order()]
     try:
         rc_driver.apply_order(rotation.effective_order())
     except RingCentralDriverError as exc:
         logger.exception("RingCentral apply_order failed")
+        journal(rotation, "rc_write_failed", failure_message, error=str(exc), order=names)
         return False
     rotation.mark_applied_order([p["id"] for p in rotation.effective_order()])
+    journal(rotation, "rc_write", "Ring order written: " + " -> ".join(names))
     return True
 
 
@@ -378,6 +386,7 @@ def _poll_once(
     _expire_stale_menus(rotation, signal_client)
     _expire_unanswered_cover_prompts(rotation, signal_client)
     _expire_welcome_setup(rotation, signal_client)
+    doctor.announce_host_result(rotation, signal_client)
     _sync_automatic_ring(rotation, signal_client, rc_driver, notifier)
     deliver_signal_update_offer(rotation, signal_client)
 
@@ -415,7 +424,12 @@ def _poll_once(
             rotation.touch_pending_confirmation(priest["id"])
             pending = rotation.pending_confirmation(priest["id"]) or pending
             ptype = pending.get("type")
-            if ptype == WELCOME_SETUP:
+            if ptype == troubleshoot.PENDING_TYPE:
+                troubleshoot.handle(
+                    text, priest, pending, rotation,
+                    _troubleshoot_tools(rotation, signal_client, rc_driver, notifier),
+                )
+            elif ptype == WELCOME_SETUP:
                 _handle_welcome_setup(text, priest, pending, signal_client, rotation)
             elif ptype in ("day_off_confirm", "absence_cover_confirm"):
                 _handle_pending_confirmation(text, priest, pending, signal_client, rotation, rc_driver, notifier)
@@ -475,6 +489,8 @@ def _poll_once(
         elif command == "SETTINGS":
             rotation.set_pending_confirmation(priest["id"], {"type": "menu_settings"})
             signal_client.send([priest["cell_number"]], SETTINGS_MENU_TEXT)
+        elif command in ("TROUBLESHOOT", "TROUBLE", "HELP ME", "FIX"):
+            troubleshoot.start(rotation, priest, _troubleshoot_tools(rotation, signal_client, rc_driver, notifier))
         elif command == "EXECUTE ORDER 66":
             _handle_execute_order_66(priest, rotation, signal_client, rc_driver, notifier)
         else:
@@ -1363,19 +1379,44 @@ def _handle_menu_restore_priest_confirm(
         signal_client.send([priest["cell_number"]], f"Restore {name}? Y/N")
         return
     rotation.pop_pending_confirmation(priest["id"])
-    try:
-        rotation.restore_priest(pending["target_cell"], triggered_by=f"signal:{priest['name']}")
-    except RotationError as exc:
-        signal_client.send([priest["cell_number"]], f"Couldn't restore him: {exc}")
-        return
-    ring_note = ""
-    if not _try_apply_effective_order(rotation, rc_driver, notifier, f"Restoring {name} FAILED"):
-        ring_note = " RingCentral could not be updated yet; the bot will retry."
     signal_client.send(
         [priest["cell_number"]],
-        f"{name} is back in the rotation and can text the bot again.{ring_note}",
+        _restore_priest_now(priest, pending["target_cell"], rotation, rc_driver, notifier, signal_client),
     )
-    signal_client.send([pending["target_cell"]], WELCOME_BACK_TEXT)
+
+
+def _restore_priest_now(
+    priest: dict, cell: str, rotation: RotationManager, rc_driver: RingCentralDriver,
+    notifier: Notifier, signal_client: SignalClient,
+) -> str:
+    """Restore a deleted priest, put him on the ring, welcome him back.
+    Returns the reply for the priest who asked."""
+    try:
+        record = rotation.restore_priest(cell, triggered_by=f"signal:{priest['name']}")
+    except RotationError as exc:
+        return f"Couldn't restore him: {exc}"
+    ring_note = ""
+    if not _try_apply_effective_order(rotation, rc_driver, notifier, f"Restoring {record['name']} FAILED"):
+        ring_note = " RingCentral could not be updated yet; the bot will retry."
+    signal_client.send([cell], WELCOME_BACK_TEXT)
+    return f"{record['name']} is back in the rotation and can text the bot again.{ring_note}"
+
+
+def _troubleshoot_tools(
+    rotation: RotationManager, signal_client: SignalClient, rc_driver: RingCentralDriver, notifier: Notifier
+) -> troubleshoot.Tools:
+    def admit(priest: dict, leg: dict) -> str:
+        record, restored = admit_ring_leg(rotation, leg, triggered_by=f"signal:{priest['name']}")
+        send_welcome(rotation, signal_client, record, restored)
+        return f"{record['name']} was added and has been sent a welcome text."
+
+    return troubleshoot.Tools(
+        rc_driver=rc_driver,
+        signal_client=signal_client,
+        enable=lambda p: _handle_set_global_automation(True, p, rotation, rc_driver, notifier, signal_client),
+        restore=lambda p, cell: _restore_priest_now(p, cell, rotation, rc_driver, notifier, signal_client),
+        admit=admit,
+    )
 
 
 def _handle_menu_remove_priest_confirm(
@@ -1450,11 +1491,18 @@ def _handle_set_global_automation(
     notifier: Notifier,
     signal_client: SignalClient,
 ) -> None:
+    was_failsafe = rotation.failsafe_active
     try:
         rotation.set_global_automation(enabled, triggered_by=f"signal:{priest['name']}")
     except RotationError as exc:
         signal_client.send([priest["cell_number"]], f"Couldn't do that: {exc}")
         return
+    journal(
+        rotation,
+        "automation_on" if enabled else "automation_off",
+        f"{'ENABLE' if enabled else 'DISABLE'} by {priest['name']}"
+        + (" (failsafe cleared)" if enabled and was_failsafe else ""),
+    )
     # Conform the live ring immediately to whoever should be covering
     # right now (a day off / recollection / vacation that started while
     # automation was off, or everyone back on after DISABLE).

@@ -52,6 +52,19 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
   California time (they use `california_today()`, the app uses the 8 PM
   handoff date). Pre-existing; run the suite before 8 PM for a clean result.
 
+- Troubleshooting (added 27 Sep 2026): Signal `TROUBLESHOOT` wizard
+  (`app/troubleshoot.py`) on top of `app/doctor.py` (checks, fixes, masked
+  report, monthly digest, review packet; also a CLI: `python -m app.doctor
+  checks|report|review|resend`). Server menu `ops/sacline` (installed to
+  /usr/local/bin). Restarts requested over Signal go through
+  `data/host-request.json` → `sacline-host-action.path` → `ops/host_action.sh`
+  → `data/host-request-result.json`. Operations journal
+  `data/ops-journal.jsonl` (`app/ops_journal.py`; host side
+  `ops/journal_append.py`) records every notable event for the 3-month review
+  (`docs/OPERATIONS-REVIEW.md`, due early Jan 2027). Guides:
+  `docs/TROUBLESHOOTING.md`, `docs/HANDOFF-CHECKLIST.md`. `AGENTS.md` and
+  `GEMINI.md` point other AI assistants here; keep them in sync.
+
 ## Rules that must stay true
 
 - Signal Messenger only. Roster cell numbers are the allowlist.
@@ -86,6 +99,10 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 - Failsafe texts everyone (including muted). Routine broadcasts skip muted priests.
 - Errors and a dead Signal daemon also SMS the priest cells via RingCentral from the emergency-line number, prefixed `Emergency Line bot:`.
 - Do not put Tailscale IPs, dashboard passwords, or other-project paths in priest-facing docs.
+- Troubleshooting stays safe: the Signal wizard offers nothing destructive (no backup restores,
+  no code rollbacks; those are `sacline` only, with confirmation). Every fix is journaled. Reports
+  go through `doctor.mask()` (phones to last 4 digits, IPs and tokens removed) and never read `.env`.
+  New notable events get a `journal(...)` line so the review sees them.
 - Hidden `EXECUTE ORDER 66` is not in HELP/ABOUT/HANDOFF. It toggles mute for the other priests and replies only to the sender.
 
 ## Run

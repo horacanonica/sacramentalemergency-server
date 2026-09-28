@@ -7,6 +7,7 @@ call volume, and it's one thing to keep alive, not two.
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ from dotenv import load_dotenv
 
 from app.failsafe import enter_manual_failsafe
 from app.notifier import EmailConfig, Notifier
+from app.ops_journal import journal
 from app.ringcentral_client import build_driver
 from app.rotation import RotationManager
 from app.scheduler import run_daily_loop
@@ -32,6 +34,16 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     load_dotenv()
     base_dir = Path(__file__).resolve().parent.parent
+    # A copy of the log in data/ so the troubleshooting report (app/doctor.py)
+    # can include it without access to `docker logs`.
+    try:
+        file_log = logging.handlers.RotatingFileHandler(
+            base_dir / "data" / "app.log", maxBytes=1_000_000, backupCount=2
+        )
+        file_log.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(file_log)
+    except OSError:
+        logger.exception("Could not open data/app.log")
 
     rotation = RotationManager(
         config_path=base_dir / "config" / "priests.yaml",
@@ -60,7 +72,10 @@ def main() -> None:
         sms_driver=rc_driver,
         numbers_provider=_alert_cells,
     )
+    journal(rotation, "bot_started", "Bot started")
     if rotation.recovered_from_damage:
+        journal(rotation, "state_recovered", "Saved data was damaged and restored from the previous save",
+                damaged_copy=rotation.recovered_from_damage)
         notifier.alert(
             "The bot's saved data was damaged (most likely by a power cut) and was "
             "restored automatically from the save before it. The last change made "

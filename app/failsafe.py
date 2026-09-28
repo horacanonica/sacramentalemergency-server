@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from app.notifier import Notifier, brand_alert
+from app.ops_journal import journal
 from app.ringcentral_client import RingCentralDriver, RingCentralDriverError
 from app.rotation import RotationManager
 from app.signal_client import SignalClient, SignalError
@@ -35,6 +36,7 @@ def enter_manual_failsafe(
     if rotation.automation_enabled:
         rotation.set_global_automation(False, triggered_by="system-failsafe", reason=reason)
     rotation.set_failsafe_active(True, reason=reason)
+    journal(rotation, "failsafe", "Automatic switching DISABLED (failsafe)", reason=reason)
 
     if rc_driver is not None:
         try:

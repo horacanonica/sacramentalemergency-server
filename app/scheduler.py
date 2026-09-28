@@ -20,9 +20,11 @@ import time
 from datetime import date, datetime
 
 from app.audit import maybe_run_weekly_audit
+from app.doctor import maybe_send_monthly_digest
 from app.failsafe import enter_manual_failsafe
 from app.localtime import california_now, effective_ring_date
 from app.notifier import Notifier
+from app.ops_journal import journal
 from app.ringcentral_client import RingCentralDriver
 from app.rotation import RotationManager
 from app.signal_client import SignalClient
@@ -41,11 +43,14 @@ def check_signal_health(
     """SMS + Signal once when the daemon dies; reset when it comes back."""
     healthy = bool(signal_client is not None and getattr(signal_client, "is_healthy", lambda: True)())
     if healthy:
+        if rotation.signal_down_alerted:
+            journal(rotation, "signal_up", "Signal messaging is working again")
         rotation.set_signal_down_alerted(False)
         return
     if rotation.signal_down_alerted:
         return
     rotation.set_signal_down_alerted(True)
+    journal(rotation, "signal_down", "Signal messaging stopped working")
     notifier.alert(SIGNAL_DOWN_MESSAGE)
 
 logger = logging.getLogger(__name__)
@@ -68,6 +73,7 @@ def run_daily_loop(
             ring_day = effective_ring_date()
             now = california_now()
             maybe_run_weekly_audit(rotation, signal_client, rc_driver, now, notifier=notifier)
+            maybe_send_monthly_digest(rotation, signal_client, now)
             if not rotation.audit_in_progress:
                 _maybe_send_cover_prompts(rotation, signal_client, ring_day, now)
                 check_signal_health(rotation, signal_client, notifier)

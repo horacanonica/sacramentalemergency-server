@@ -1109,7 +1109,8 @@ def test_settings_restore_priest_brings_back_his_schedule(priests_config, state_
     back = [p for p in rotation.current_order() if p["id"] == "fr_bugnini"][0]
     assert back["day_off"] == "Thursday" and back["rc_new"]
     assert rotation.deleted_priests() == []
-    assert signal_client.sent[-1][0] == [NUM_BUGNINI]
+    assert any(nums == [NUM_BUGNINI] and m.startswith("Welcome back") for nums, m in signal_client.sent)
+    assert "is back in the rotation" in signal_client.sent[-1][1]
 
 
 def test_settings_restore_with_nothing_deleted(priests_config, state_path):
