@@ -51,6 +51,7 @@ import calendar
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -161,6 +162,17 @@ _REMOVED_COUNT_ACTIONS = {
     "set_round_progress",
     "reset_year_totals",
 }
+
+
+_state_locks: dict[Path, threading.RLock] = {}
+_state_locks_guard = threading.Lock()
+
+
+def _state_file_lock(path: Path) -> threading.RLock:
+    """One lock per state file, shared by every RotationManager in the process."""
+    key = path.resolve()
+    with _state_locks_guard:
+        return _state_locks.setdefault(key, threading.RLock())
 
 
 @dataclass
@@ -368,8 +380,20 @@ class RotationManager:
 
     def _write_state(self, state: dict[str, Any], rotate_backup: bool = True) -> None:
         """Write state.json so a power cut at any moment leaves a readable
-        state.json, with the previous version kept as state.json.bak."""
-        tmp_path = self.state_path.with_suffix(".json.tmp")
+        state.json, with the previous version kept as state.json.bak.
+
+        The Signal bot and scheduler threads both save at 8 PM, and the web
+        dashboard holds its own RotationManager on the same file. On 29 Sep
+        2026 two saves shared one temp file, one rename failed, and the line
+        dropped into failsafe. So saves to a file are serialized by a
+        per-path lock, and temp names are unique per process and thread in
+        case another process (the app.doctor CLI) saves at the same time."""
+        with _state_file_lock(self.state_path):
+            self._write_state_locked(state, rotate_backup)
+
+    def _write_state_locked(self, state: dict[str, Any], rotate_backup: bool) -> None:
+        suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        tmp_path = self.state_path.with_suffix(".json" + suffix)
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
             f.flush()
@@ -378,14 +402,18 @@ class RotationManager:
             # Hard link, so state.json.bak becomes the current (soon previous)
             # file without copying it. Best effort: a missed backup must never
             # block saving the state itself.
-            bak_tmp = self.state_path.with_suffix(".json.bak.tmp")
+            bak_tmp = self.state_path.with_suffix(".json.bak" + suffix)
             try:
                 bak_tmp.unlink(missing_ok=True)
                 os.link(self.state_path, bak_tmp)
                 bak_tmp.replace(self._backup_path())
             except OSError:
                 logger.warning("Could not update %s", self._backup_path().name, exc_info=True)
-        tmp_path.replace(self.state_path)  # atomic on POSIX
+        try:
+            tmp_path.replace(self.state_path)  # atomic on POSIX
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+            raise
         dir_fd = os.open(self.state_path.parent, os.O_RDONLY)
         try:
             os.fsync(dir_fd)  # make the rename itself survive a power cut

@@ -132,7 +132,7 @@ When automation is on, RingCentral is updated automatically whenever the live or
 
 ## When the order rotates
 
-Only when someone texts `ROTATE`, uses `SETTINGS` → 6 **Set order** to put the priests in any order, or changes it on the dashboard. Nothing is counted and nothing rotates on its own. After a rotate, **everyone** gets a text that the order changed (new #1: “You are now on call”; the others: “The priest on call has changed”), plus STATUS.
+Only when someone texts `ROTATE`, uses `SETTINGS` → 6 **Set order** to put the priests in any order, or changes it on the dashboard. Nothing is counted and nothing rotates on its own. After a rotate, **everyone** gets a text that the order changed (new #1: “You are now on call”; the outgoing #1: “Duty complete. <name> is now on call. You are #N on the ring list. 🫡” (or “You are silenced. 🫡” if he no longer rings); the others: “The priest on call has changed”), plus STATUS.
 
 ---
 
@@ -192,7 +192,7 @@ Long explanation of rotation, time off, and ENABLE/DISABLE. Same facts as this g
 
 ### `ROTATE`
 
-See [Manual rotate](#manual-rotate-while-automation-is-on). After the rotate succeeds, **everyone** is texted that the order changed: the new priest on call gets “You are now on call” plus STATUS; the others get “The priest on call has changed” plus STATUS. (A day-off or vacation that quietly changes who is ringing, without a rotate, still texts **only** the new #1.)
+See [Manual rotate](#manual-rotate-while-automation-is-on). After the rotate succeeds, **everyone** is texted that the order changed: the new priest on call gets “You are now on call” plus STATUS, ending with 🫡; the outgoing #1 gets “Duty complete. <name> is now on call. You are #N on the ring list. 🫡” (or “You are silenced. 🫡” if he no longer rings, e.g. day off or vacation), plus STATUS; the others get “The priest on call has changed” plus STATUS. (A day-off or vacation that changes who is ringing, without a rotate, texts **only** the new #1 and the outgoing #1.)
 
 ### `DISABLE`
 
@@ -361,7 +361,7 @@ All times are California. The scheduler checks about once a minute. The Signal b
 - Vacation range includes today  
 - Manual disable is on (dashboard)  
 
-RingCentral is updated as soon as the live list changes. If the priest on call changed, **only the new #1** is texted “You are now on call” plus STATUS. If #1 stayed and only #2/#3 changed, nobody is texted.
+RingCentral is updated as soon as the live list changes. If the priest on call changed, **only the new #1 and the outgoing #1** are texted: “You are now on call” plus STATUS, ending with 🫡 / “Duty complete. <name> is now on call. You are silenced. 🫡” (or “#N on the ring list” if he still rings). Both are direct texts, sent even if muted. If #1 stayed and only #2/#3 changed, nobody is texted.
 
 **Does not fire when**
 
@@ -501,8 +501,9 @@ Vacation itself cannot be SKIP’d from Availability; they are away.
 
 | Event | Who is texted |
 |---|---|
-| Rotate (Signal `ROTATE` or dashboard) | **Everyone**: new #1 “You are now on call”; the others “The priest on call has changed” (plus STATUS) |
-| Live #1 changed without a rotate (day off started/ended, ENABLE, etc.) | Only the new priest on call |
+| Rotate (Signal `ROTATE` or `SETTINGS` → 6) | **Everyone ringing** (plus the sender): new #1 “You are now on call”; outgoing #1 “Duty complete. … You are #N on the ring list / silenced”; the others “The priest on call has changed” (plus STATUS). Dashboard rotate: one “Rotation triggered from the admin dashboard” text to unmuted priests |
+| Silenced priest (not ringing: day off, vacation, recollection, disabled) | No rotation updates until he rings again. Exceptions: the priest who sent ROTATE / set order, and the outgoing #1 (“… You are silenced. 🫡”) |
+| Live #1 changed without a rotate (day off started/ended, ENABLE, etc.) | The new priest on call and the outgoing #1 (even if muted) |
 | Live #2/#3 changed, same #1 | Nobody |
 | Cover prompt (2-day or Sunday 3pm) | Remaining priests who have a day off (even if muted — it is a targeted question) |
 | Vacation started | Remaining **not muted** |

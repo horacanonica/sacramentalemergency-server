@@ -23,8 +23,7 @@ def test_save_keeps_previous_version_as_backup(priests_config, state_path):
     mgr.rotate(triggered_by="test")
     assert json.loads(state_path.with_suffix(".json.bak").read_text())["order"] == before
     assert json.loads(state_path.read_text())["order"] == ids(mgr.current_order())
-    assert not state_path.with_suffix(".json.tmp").exists()
-    assert not state_path.with_suffix(".json.bak.tmp").exists()
+    assert not list(state_path.parent.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("damage", ["", '{"order": ["fr_bu', "\x00\x00\x00", "[]"])
@@ -76,3 +75,33 @@ def test_first_run_is_not_a_recovery(priests_config, state_path):
     assert mgr.recovered_from_damage is None
     assert state_path.exists()
     assert not state_path.with_suffix(".json.bak").exists()
+
+
+def test_concurrent_saves_do_not_collide(priests_config, state_path):
+    """29 Sep 2026: the bot and scheduler threads saved at 8 PM at the same
+    moment; one rename found the shared temp file gone and tripped failsafe.
+    Two managers on one file (like main.py + the web dashboard) must also be safe."""
+    import threading
+
+    managers = [make(priests_config, state_path), make(priests_config, state_path)]
+    errors = []
+    start = threading.Barrier(8)
+
+    def save_many(mgr):
+        start.wait()
+        try:
+            for _ in range(50):
+                mgr._save()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save_many, args=(managers[i % 2],)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    json.loads(state_path.read_text())
+    json.loads(state_path.with_suffix(".json.bak").read_text())
+    assert not list(state_path.parent.glob("*.tmp"))

@@ -120,7 +120,9 @@ def create_app(config: dict | None = None) -> Flask:
             # the same note in app/signal_bot.py's _handle_rotate.
             rc_driver.apply_order(rotation.effective_order())
             rotation.mark_applied_order([p["id"] for p in rotation.effective_order()])
-            numbers = rotation.notifiable_numbers(new_order)
+            # Silenced priests (not ringing today) get no rotation update.
+            ringing = {p["id"] for p in rotation.effective_order()}
+            numbers = rotation.notifiable_numbers([p for p in new_order if p["id"] in ringing])
             names = " -> ".join(p["name"] for p in new_order)
             notifier.notify_all(numbers, f"Rotation triggered from the admin dashboard.\nNew order: {names}")
         except RotationError as exc:

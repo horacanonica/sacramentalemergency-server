@@ -259,7 +259,7 @@ def _format_about() -> str:
         "If an absence continues into the next week, that reminder is sent again at 3:00 PM Sunday. "
         "The app always keeps at least one priest covering the line, so a change that would leave "
         "no one available gets rejected. Whenever the priest on call changes - for any reason, "
-        "automatic or manual - the new priest on call gets a text so he has a heads up.\n\n"
+        "automatic or manual - the new priest on call and the one going off call each get a text.\n\n"
         "Text DISABLE to turn off all automatic day-off/vacation/recollection skipping for "
         "everyone at once (e.g. if the line truly needs full coverage regardless of anyone's normal "
         "schedule). Text ENABLE to turn it back on - the live ring is immediately updated to whoever "
@@ -289,15 +289,31 @@ def _try_apply_effective_order(
     return True
 
 
-def _notify_new_on_call(rotation: RotationManager, signal_client: SignalClient, lead_id: str) -> None:
-    """Heads-up only to the priest who just became live #1."""
-    lead = next((p for p in rotation.current_order() if p["id"] == lead_id), None)
-    if lead is None or not lead.get("cell_number"):
-        return
+def _off_call_message(rotation: RotationManager, priest_id: str, lead: dict | None, status: str) -> str:
+    """Text to the priest who just stopped being live #1. "Silenced" when
+    he no longer rings at all (day off, vacation, recollection, disabled);
+    otherwise his place in the live ring."""
+    ringing = [p["id"] for p in rotation.effective_order()]
+    handed_to = f" {lead['name']} is now on call." if lead else ""
+    place = f"#{ringing.index(priest_id) + 1} on the ring list" if priest_id in ringing else "silenced"
+    return f"Duty complete.{handed_to} You are {place}. 🫡\n\n{status}"
+
+
+def _notify_new_on_call(
+    rotation: RotationManager, signal_client: SignalClient, lead_id: str, previous_lead_id: str | None = None
+) -> None:
+    """Heads-up to the priest who just became live #1 and to the one he
+    replaced. Direct texts, not broadcasts, so sent even if muted."""
+    by_id = {p["id"]: p for p in rotation.current_order()}
+    lead = by_id.get(lead_id)
     status = _format_status(
         rotation.current_order(), rotation.automation_enabled
     )
-    signal_client.send([lead["cell_number"]], f"You are now on call.\n\n{status}")
+    if lead is not None and lead.get("cell_number"):
+        signal_client.send([lead["cell_number"]], f"You are now on call.\n\n{status} 🫡")
+    previous = by_id.get(previous_lead_id) if previous_lead_id != lead_id else None
+    if previous is not None and previous.get("cell_number"):
+        signal_client.send([previous["cell_number"]], _off_call_message(rotation, previous["id"], lead, status))
 
 
 def _sync_automatic_ring(
@@ -344,10 +360,11 @@ def _sync_automatic_ring(
         return
 
     if lead_changed:
+        previous_lead_id = rotation.last_notified_lead_id
         synced_lead = rotation.sync_lead_notification_state()
         if synced_lead is None:
             return
-        _notify_new_on_call(rotation, signal_client, synced_lead)
+        _notify_new_on_call(rotation, signal_client, synced_lead, previous_lead_id)
 
 
 def run_bot_loop(
@@ -474,7 +491,7 @@ def _poll_once(
         command = text.upper()
         all_numbers = rotation.notifiable_numbers()
         if command == "ROTATE":
-            _handle_rotate(priest["name"], rotation, rc_driver, notifier, all_numbers)
+            _handle_rotate(priest["name"], rotation, rc_driver, notifier, all_numbers, sender_id=priest["id"])
         elif command == "STATUS":
             signal_client.send(
                 [priest["cell_number"]],
@@ -1603,7 +1620,9 @@ def _handle_rotate(
     rc_driver: RingCentralDriver,
     notifier: Notifier,
     all_numbers: list[str],
+    sender_id: str | None = None,
 ) -> None:
+    previous_lead_id = rotation.last_notified_lead_id
     try:
         new_order = rotation.rotate(triggered_by=f"signal:{sender_name}", reason="manual trigger via Signal")
     except RotationError as exc:
@@ -1622,7 +1641,7 @@ def _handle_rotate(
         )
         return
 
-    _finish_rotation_notices(sender_name, rotation, notifier.signal_client, rc_driver)
+    _finish_rotation_notices(sender_name, rotation, notifier.signal_client, rc_driver, previous_lead_id, sender_id)
 
 
 
@@ -1709,6 +1728,7 @@ def _handle_set_order_confirm(
         return
     rotation.pop_pending_confirmation(priest["id"])
     sender_name = priest["name"]
+    previous_lead_id = rotation.last_notified_lead_id
     try:
         rotation.manual_override(pending["new_order"], triggered_by=f"signal:{sender_name}", reason="set order via Signal")
     except RotationError as exc:
@@ -1726,7 +1746,7 @@ def _handle_set_order_confirm(
             notifier=notifier,
         )
         return
-    _finish_rotation_notices(sender_name, rotation, signal_client, rc_driver)
+    _finish_rotation_notices(sender_name, rotation, signal_client, rc_driver, previous_lead_id, priest["id"])
 
 
 def _finish_rotation_notices(
@@ -1734,8 +1754,14 @@ def _finish_rotation_notices(
     rotation: RotationManager,
     signal_client: SignalClient,
     rc_driver: RingCentralDriver,
+    previous_lead_id: str | None = None,
+    sender_id: str | None = None,
 ) -> None:
+    """Silenced priests (not ringing: day off, vacation, recollection,
+    disabled) get no rotation update until they ring again, except the
+    one who asked for the change and the outgoing #1."""
     effective = rotation.effective_order()
+    ringing = {p["id"] for p in effective}
     new_lead = effective[0] if effective else None
     status = _format_status(
         rotation.current_order(), rotation.automation_enabled
@@ -1750,8 +1776,10 @@ def _finish_rotation_notices(
         if not priest.get("cell_number"):
             continue
         if priest["id"] == new_lead_id:
-            signal_client.send([priest["cell_number"]], f"You are now on call.\n\n{status}")
-        else:
+            signal_client.send([priest["cell_number"]], f"You are now on call.\n\n{status} 🫡")
+        elif priest["id"] == previous_lead_id:
+            signal_client.send([priest["cell_number"]], _off_call_message(rotation, priest["id"], new_lead, status))
+        elif priest["id"] in ringing or priest["id"] == sender_id:
             signal_client.send(
                 [priest["cell_number"]],
                 f"The priest on call has changed.\n\n{status}",

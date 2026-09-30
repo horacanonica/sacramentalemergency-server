@@ -535,10 +535,13 @@ def test_poll_notifies_everyone_when_lead_changes_automatically(priests_config, 
 
     _poll_once(signal_client, rotation, rc_driver, notifier)  # no incoming message queued at all
 
-    assert len(signal_client.sent) == 1
-    numbers, message = signal_client.sent[0]
-    assert numbers == [NUM_BUGNINI]
-    assert "You are now on call" in message
+    assert len(signal_client.sent) == 2
+    by_number = {nums[0]: msg for nums, msg in signal_client.sent}
+    assert by_number[NUM_BUGNINI].startswith("You are now on call.")
+    assert by_number[NUM_BUGNINI].endswith(" 🫡")
+    assert by_number[NUM_MARTIN].startswith(
+        "Duty complete. Fr Bugnini SSPX is now on call. You are silenced. 🫡\n\nCurrent ring order:"
+    )
 
 
 def test_poll_does_not_duplicate_notification_for_explicit_rotate(priests_config, state_path):
@@ -552,7 +555,9 @@ def test_poll_does_not_duplicate_notification_for_explicit_rotate(priests_config
 
     by_number = {nums[0]: msg for nums, msg in signal_client.sent}
     assert "You are now on call" in by_number[NUM_BUGNINI]
-    assert "The priest on call has changed" in by_number[NUM_MARTIN]
+    assert by_number[NUM_MARTIN].startswith(
+        "Duty complete. Fr Bugnini SSPX is now on call. You are #3 on the ring list. 🫡\n\nCurrent ring order:"
+    )
     assert "The priest on call has changed" in by_number[NUM_YOUNGTRAD]
 
 
@@ -683,6 +688,8 @@ def test_poll_pushes_effective_order_when_lead_becomes_unavailable(priests_confi
     assert rotation.last_applied_order == ["fr_bugnini", "fr_youngtrad"]
     assert signal_client.sent[0][0] == [NUM_BUGNINI]
     assert "You are now on call" in signal_client.sent[0][1]
+    assert signal_client.sent[1][0] == [NUM_MARTIN]
+    assert "You are silenced. 🫡\n\nCurrent ring order:" in signal_client.sent[1][1]
 
 
 def test_poll_pushes_rc_when_second_priest_drops_off_but_lead_stays(priests_config, state_path):
@@ -1009,7 +1016,10 @@ def test_set_order_by_numbers_saves_and_tells_everyone(priests_config, state_pat
     assert [p["id"] for p in rotation.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]
     texts = {nums[0]: msg for nums, msg in signal_client.sent}
     assert texts[NUM_YOUNGTRAD].startswith("You are now on call.")
-    assert texts[NUM_MARTIN].startswith("The priest on call has changed.")
+    assert texts[NUM_YOUNGTRAD].endswith(" 🫡")
+    assert texts[NUM_MARTIN].startswith(
+        "Duty complete. Fr Youngtrad FSSP is now on call. You are #2 on the ring list. 🫡\n\nCurrent ring order:"
+    )
     assert texts[NUM_BUGNINI].startswith("The priest on call has changed.")
 
     # No duplicate "on call" text on the next poll.
@@ -1220,3 +1230,57 @@ def test_unauthorized_reply_tells_a_new_priest_what_to_do(priests_config, state_
         "Sorry, this number isn't authorized to manage the rotation. If you are a new priest, "
         "please ask one of the other priests to add you to the system through the Signal bot.",
     )
+
+
+def test_off_call_text_reaches_muted_outgoing_lead(priests_config, state_path):
+    """The outgoing #1 is told directly, like the new #1, even if muted."""
+    rotation = make_manager(priests_config, state_path)
+    rotation.set_notifications_muted("fr_martin", True, triggered_by="test")
+    rotation.set_day_off("fr_martin", california_today().strftime("%A"), triggered_by="test")
+    signal_client = FakeSignalClient()
+
+    _poll_once(signal_client, rotation, ManualModeDriver(), make_notifier(signal_client))
+
+    assert [nums for nums, _ in signal_client.sent] == [[NUM_BUGNINI], [NUM_MARTIN]]
+
+
+def test_no_off_call_text_when_lead_unchanged(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    rotation.set_day_off("fr_youngtrad", california_today().strftime("%A"), triggered_by="test")
+    signal_client = FakeSignalClient()
+
+    _poll_once(signal_client, rotation, ManualModeDriver(), make_notifier(signal_client))
+
+    assert signal_client.sent == []
+
+
+def test_rotate_skips_silenced_priest_but_not_the_sender(priests_config, state_path):
+    """Youngtrad is on his day off (silenced): no rotation update for him.
+    Martin texts ROTATE: Bugnini is on call, Martin is told his new place."""
+    rotation = make_manager(priests_config, state_path)  # Martin, Bugnini, Youngtrad
+    rotation.set_day_off("fr_youngtrad", california_today().strftime("%A"), triggered_by="test")
+    rotation.mark_applied_order([p["id"] for p in rotation.effective_order()])
+    rotation.sync_lead_notification_state()
+    signal_client = FakeSignalClient()
+
+    signal_client.queue_incoming(NUM_MARTIN, "ROTATE")
+    _poll_once(signal_client, rotation, ManualModeDriver(), make_notifier(signal_client))
+
+    texts = {nums[0]: msg for nums, msg in signal_client.sent}
+    assert set(texts) == {NUM_BUGNINI, NUM_MARTIN}
+    assert texts[NUM_BUGNINI].startswith("You are now on call.")
+    assert texts[NUM_MARTIN].startswith("Duty complete. Fr Bugnini SSPX is now on call. You are #2 on the ring list. 🫡")
+
+
+def test_silenced_sender_still_gets_rotation_confirmation(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)  # Martin, Bugnini, Youngtrad
+    rotation.set_day_off("fr_youngtrad", california_today().strftime("%A"), triggered_by="test")
+    rotation.mark_applied_order([p["id"] for p in rotation.effective_order()])
+    rotation.sync_lead_notification_state()
+    signal_client = FakeSignalClient()
+
+    signal_client.queue_incoming(NUM_YOUNGTRAD, "ROTATE")
+    _poll_once(signal_client, rotation, ManualModeDriver(), make_notifier(signal_client))
+
+    texts = {nums[0]: msg for nums, msg in signal_client.sent}
+    assert texts[NUM_YOUNGTRAD].startswith("The priest on call has changed.")
