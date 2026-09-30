@@ -10,9 +10,9 @@ That file is the current priest-facing + host guide. It is the source of truth f
 call handling backend, which killed the legacy answering-rule API the app
 wrote to. The driver was migrated to User Call Handling v2
 (`RC_MODE=api-v2`) and verified against the live line — a commanded
-switch was applied, read back, and restored. Automatic scheduling is
-still **OFF** (it has been since 13 Aug 2026); the rotation goes live
-when a priest texts `ENABLE`.
+switch was applied, read back, and restored. Automatic scheduling has
+been **ON** since 24 Sep 2026 (the failsafe turned it off at 8 PM on
+29 Sep after a state-save race, since fixed; re-enabled the same night).
 
 Same copy also lives at `~/Downloads/Sacramental-Emergency-Line-Rotation.md` (and `.pdf`).
 
@@ -138,7 +138,7 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 docker compose up -d --build
 ```
 
-Tests (from a venv with pytest): `pytest -q` — 216 passing as of 27 Sep 2026 (run before 8 PM, or with time-machine set to noon).
+Tests (from a venv with pytest): `pytest -q` — 261 passing as of 29 Sep 2026 (run before 8 PM, or with time-machine set to noon).
 
 Check which RingCentral backend the account is on before debugging any
 write failure:

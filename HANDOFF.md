@@ -17,23 +17,25 @@ Only numbers on the priest roster can command it. Adding a priest authorizes tha
 
 **Dashboard:** a password-protected web page on the private network (not the public internet). One admin login, not the RingCentral login.
 
-**Automation is currently OFF** (has been since 13 Aug 2026). While it's off, day off, recollection, and vacation are all ignored — every priest stays on the live ring regardless of his schedule, and the descriptions below of what automation *would* do are on hold until someone texts `ENABLE`. When it's on: it takes people off the live ring for day off, recollection, and vacation, and puts them back when those end. It will not leave the line empty. If switching fails, it turns itself off, puts everyone back on in the app, and texts **everyone** to update RingCentral by hand until someone texts `ENABLE`.
+**Automation is ON** (turned on 24 Sep 2026; briefly off on 29 Sep, see below). When it's off, day off, recollection, and vacation are all ignored and every priest stays on the live ring. When it's on: it takes people off the live ring for day off, recollection, and vacation, and puts them back when those end. It will not leave the line empty. If switching fails, it turns itself off, puts everyone back on in the app, and texts **everyone** to update RingCentral by hand until someone texts `ENABLE`.
 
-You can still use `ROTATE` or the dashboard regardless of automation. If someone reorders the ring by hand in RingCentral, the Monday audit **accepts that lineup** as the starting order, tests that commanded switches still work, then puts that same lineup back. A hand edit is not a failure. (The Monday audit itself is also on hold while automation is off — it only runs when automation is on.)
+You can still use `ROTATE` or the dashboard regardless of automation. If someone reorders the ring by hand in RingCentral, the Monday audit **accepts that lineup** as the starting order, tests that commanded switches still work, then puts that same lineup back. A hand edit is not a failure. (The Monday audit only runs while automation is on.)
 
-**Right now (24 Sep 2026)**
+**Right now (29 Sep 2026)**
 
-| Priest | Saved order | Day off | Recollection | Vacation | On the line now | Routine texts |
-|---|---|---|---|---|---|---|
-| Fr Youngtrad FSSP | #1 | Monday | 4th Wednesday | — | active | muted |
-| Fr Bugnini SSPX | #2 | — | 2nd Wednesday | 11–13 Oct 2026 | active | muted |
-| Fr James Martin SJ | #3 | Tuesday | 3rd Wednesday | 19–23 Oct 2026 | active | unmuted |
+| Priest | Saved order | Day off | Recollection | Vacation | Routine texts |
+|---|---|---|---|---|---|
+| Fr Youngtrad FSSP | #1 | Monday | 4th Wednesday | — | unmuted |
+| Fr James Martin SJ | #2 | Tuesday | 3rd Wednesday (skipping 21 Oct) | 19–23 Oct 2026 | unmuted |
+| Fr Bugnini SSPX | #3 | — | 2nd Wednesday | 11–13 Oct 2026 | unmuted |
 
 **Visits are not counted (since 24 Sep 2026).** There are no year totals, no anointing log, and no automatic "ready to rotate?" question. The order changes only when someone texts `ROTATE` (or uses the dashboard). A text like `2 UC Davis` gets the reply “Visits are no longer tracked. To change who's first, text ROTATE.”
 
-All three show active because automation is off — that overrides everyone's day off, recollection, and vacation alike, including the upcoming trips. Saved and live are the same: Youngtrad → Bugnini → Martin. `STATUS` shows `(inactive)` after a priest's name only when he is off the live ring, which can't currently happen to anyone with automation off. Youngtrad and Bugnini have routine broadcasts muted (e.g. quiet schedule-shift notices) — they still fully participate in the ring and get everything else (STATUS replies, failsafe alerts, cover prompts, and the "order changed" text after a rotate); only unsolicited routine texts are suppressed for them.
+Who is on the live ring depends on the day: on **Mondays** Youngtrad is off, on **Tuesdays** Martin is off (each from 8:00 PM the evening before). `STATUS` shows `(inactive)` after the name of whoever is off the live ring. Nobody is muted (since 24 Sep 2026), so everyone gets routine texts.
 
-Once `ENABLE` is texted, automation resumes exactly as configured: on **Mondays**, Youngtrad would be off; on **Tuesdays**, Martin. **11–13 Oct 2026**, Bugnini would be away, which would suspend Youngtrad's Monday (12 Oct) and Martin's Tuesday (13 Oct) day-offs that week by default (a peer's vacation overrides everyone else's day off unless they explicitly move or skip it) — both would get a text two days before asking whether to skip or move that week's day off. **19–23 Oct 2026**, Martin would be away, which would suspend Youngtrad's Monday (19 Oct) the same way. The app never lets a change like this leave nobody on the line.
+**Coming up:** **11–13 Oct 2026**, Bugnini is away, which suspends Youngtrad's Monday (12 Oct) and Martin's Tuesday (13 Oct) day-offs that week by default (a peer's vacation overrides everyone else's day off unless they explicitly move or skip it) — both get a text two days before asking whether to skip or move that week's day off. **19–23 Oct 2026**, Martin is away, which suspends Youngtrad's Monday (19 Oct) the same way; Martin has already skipped his 21 Oct recollection, which falls inside the trip. The app never lets a change like this leave nobody on the line.
+
+**29 Sep 2026 outage:** at the 8:00 PM switch two saves of `state.json` collided, the save failed, and the failsafe turned automation off and texted everyone. The save bug is fixed (saves to the file are now serialized), automation was turned back on from the dashboard at 8:54 PM, and the priests were texted that it was back on.
 
 ---
 
@@ -114,7 +116,7 @@ The real roster numbers live only in `config/priests.yaml` on the server, and th
 
 Mute only stops **routine broadcast** texts. It does not take anyone off the phone line. A muted priest can still text the bot in Signal and get a reply. Failsafe alerts, cover prompts, “change another priest’s schedule,” and **rotation-complete** texts (after someone actually rotates) go to every priest with a cell number, muted or not.
 
-Right now **Fr Youngtrad FSSP and Fr Bugnini SSPX are muted**. Only Fr James Martin SJ gets routine texts.
+Right now **nobody is muted**. Everyone gets routine texts.
 
 ### Dashboard
 
@@ -439,7 +441,7 @@ If the container dies mid-audit, the next start rolls back the saved snapshot an
 
 **Success**
 
-- Mondays of 17 Aug, 24 Aug, 31 Aug, and 7 Sep 2026: Fr James Martin SJ only, exactly `audit passed successfully.`  
+- The first four passing Mondays: Fr James Martin SJ only, exactly `audit passed successfully.` The first was 28 Sep 2026; three remain (5, 12, 19 Oct if they pass).  
 - After those four: silent. Host logs still say it passed.  
 - No other priest is texted.
 
@@ -563,30 +565,34 @@ A rotate texts everyone. If a name is missing, check History: if the rotate is l
 The container must be running. Failsafe should have texted if the bot loop crashed; if Signal itself is down, that text also fails. Check the container logs.
 
 **Monday audit**  
-Settings → 4. Still empty: the audit is skipped entirely while automation is off, and automation has been off since 13 Aug 2026. The first run will be the first Monday 9:00 AM after someone texts `ENABLE`.
+Settings → 4. The audit runs Mondays at 9:00 AM, only while automation is on. The first run was 28 Sep 2026 and passed.
 
 **RingCentral API outages / breaking changes**  
 There is no subscribe-to-“this API will break” feed. For outages: [status.ringcentral.com](https://status.ringcentral.com/) (email/SMS subscribe) or Admin Portal → a user → Service Status Notification. For API changes: [RingEX API changelog](https://developers.ringcentral.com/guide/basics/changelog) (breaking changes marked). If the API fails on a push or on the Monday audit, failsafe runs.
 
 ---
 
-## Current stored schedules (as of 23 Sep 2026)
+## Current stored schedules (as of 29 Sep 2026)
 
 These are what the app will apply until someone changes them. STATUS and
 the dashboard only ever show a vacation while its end date hasn't passed
-yet - the 24-28 Aug vacations below have already ended and no longer
-display, but here (unlike STATUS) they're worth a mention since the
-Monday-coverage note further down refers to them.
+yet. The app stores one vacation per priest, so a past trip disappears
+from the record once a new one is set; the 24–28 Aug note below is kept
+because it shows how a peer's vacation affects a day off.
 
 - **Fr Youngtrad FSSP** — day off Monday; 4th Wednesday recollection; was away 24–28 Aug 2026 (past)
-- **Fr Bugnini SSPX** — day off Monday; 2nd Wednesday recollection; away 11–13 Oct 2026
-- **Fr James Martin SJ** — day off Tuesday; 3rd Wednesday recollection; was away 24–28 Aug 2026 (past)
+- **Fr James Martin SJ** — day off Tuesday; 3rd Wednesday recollection (skipping 21 Oct 2026); away 19–23 Oct 2026
+- **Fr Bugnini SSPX** — no day off (removed 24 Sep 2026); 2nd Wednesday recollection; away 11–13 Oct 2026
 
-**Ordinary Mondays:** Bugnini and Youngtrad are off. The phone skips them. Martin has the line unless he is away.
+**Ordinary Mondays:** Youngtrad is off. The phone skips him; Martin and Bugnini ring.
 
-**24–28 Aug 2026 (past):** Youngtrad and Martin were away. Bugnini was the only one left, so his Monday day off that week was automatically cancelled. Two days before (ring-day 22 Aug) he was prompted anyway to confirm he still had a day off on file; no reply would have still left him ON, which is what you want.
+**Ordinary Tuesdays:** Martin is off. Youngtrad and Bugnini ring.
 
-**11–13 Oct 2026:** Bugnini is away. Fr James Martin SJ's usual Tuesday day off (13 Oct falls inside this window) and Fr Youngtrad FSSP's Monday (12 Oct) both get suspended for that week the same way the Aug week worked above - during a peer's vacation, day offs default to skipped, not honored. Two days before (ring-day 9 Oct) both Youngtrad and Martin get the SKIP-or-move-your-day-off prompt; no reply leaves each of them ON that week, which is what you want.
+**24–28 Aug 2026 (past):** Youngtrad and Martin were away. Bugnini was the only one left, so his Monday day off that week (he still had one then) was automatically cancelled. Two days before (ring-day 22 Aug) he was prompted anyway to confirm; no reply would have still left him ON, which is what you want.
+
+**11–13 Oct 2026:** Bugnini is away. Martin's Tuesday (13 Oct) and Youngtrad's Monday (12 Oct) day offs both get suspended for that week — during a peer's vacation, day offs default to skipped, not honored. Two days before (ring-day 9 Oct) both get the SKIP-or-move-your-day-off prompt; no reply leaves each of them ON that week, which is what you want. Known issue: the trip starts on a Sunday, so the prompt is filed under the week of 5 Oct. A SKIP reply changes nothing (they are ON anyway), but a reply moving the day off (e.g. THURSDAY) would apply to 5–11 Oct, not to 12–13 Oct.
+
+**19–23 Oct 2026:** Martin is away. Youngtrad's Monday (19 Oct) day off is suspended the same way; his prompt comes on ring-day 17 Oct. Bugnini has no day off, so nothing changes for him.
 
 ---
 
