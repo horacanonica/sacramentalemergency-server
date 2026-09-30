@@ -101,7 +101,7 @@ _ring_lookup_misses: dict[str, float] = {}
 COVER_PROMPT_TIMEOUT_SECONDS = 24 * 60 * 60
 
 AVAILABILITY_OPTIONS_TEXT = (
-    "VACATION or AWAY - set/clear an upcoming date range away\n"
+    "VACATION or AWAY - add or cancel trips (dates away)\n"
     "DAY OFF - set/clear a recurring weekly day off\n"
     "RECOLLECTION - set/clear a monthly day of recollection"
 )
@@ -217,9 +217,10 @@ def _format_status(order: list[dict], automation_enabled: bool = True) -> str:
     lines.append("")
     lines.append("Vacation/Away:")
     for p in order:
-        vacation = p.get("vacation")
-        if vacation and vacation.get("start") and vacation.get("end"):
-            lines.append(f"{p['name']}: {_mmdd(vacation['start'])} until {_mmdd(vacation['end'])}")
+        trips = p.get("vacations") or ([p["vacation"]] if p.get("vacation") else [])
+        if trips:
+            spans = ", ".join(f"{_mmdd(v['start'])} until {_mmdd(v['end'])}" for v in trips)
+            lines.append(f"{p['name']}: {spans}")
         else:
             lines.append(f"{p['name']}: Nothing scheduled")
 
@@ -459,6 +460,7 @@ def _poll_once(
                 "menu_day_off",
                 "menu_recollection",
                 "menu_vacation",
+                "menu_vacation_more",
                 "menu_settings",
                 "menu_add_priest_name",
                 "menu_add_priest_cell",
@@ -642,6 +644,8 @@ def _handle_menu_pending(
         _handle_menu_recollection(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_vacation":
         _handle_menu_vacation(text, priest, pending, signal_client, rotation)
+    elif ptype == "menu_vacation_more":
+        _handle_menu_vacation_more(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_settings":
         _handle_menu_settings(text, priest, signal_client, rotation)
     elif ptype == "menu_add_priest_name":
@@ -662,16 +666,36 @@ def _handle_menu_pending(
         _handle_menu_set_order(text, priest, signal_client, rotation)
 
 
+def _trip_span(trip: dict) -> str:
+    return f"{_mmdd(trip['start'])}–{_mmdd(trip['end'])}"
+
+
 def _vacation_line(priest_record: dict) -> str | None:
-    vacation = priest_record.get("vacation")
-    if not vacation:
-        return None
+    trips = priest_record.get("vacations") or ([priest_record["vacation"]] if priest_record.get("vacation") else [])
     try:
-        start = date.fromisoformat(vacation["start"]).strftime("%m/%d")
-        end = date.fromisoformat(vacation["end"]).strftime("%m/%d")
+        spans = [_trip_span(v) for v in trips]
     except (KeyError, TypeError, ValueError):
         return None
-    return f"Vacation: {start}–{end}"
+    if not spans:
+        return None
+    return ("Vacation: " if len(spans) == 1 else "Vacations: ") + ", ".join(spans)
+
+
+VACATION_DATES_PROMPT = "Reply with start and end dates as MM/DD-MM/DD (e.g. 08/20-08/27)."
+
+
+def _vacation_prompt(rotation: RotationManager, target_id: str, sender_id: str, target_name: str) -> str:
+    trips = rotation.upcoming_vacations(target_id)
+    if not trips:
+        return VACATION_DATES_PROMPT
+    who = "you" if target_id == sender_id else target_name
+    lines = [f"Trips on file for {who}:"]
+    lines += [f"{i}. {_trip_span(v)}" for i, v in enumerate(trips, start=1)]
+    lines.append(
+        "Reply with a new trip's start and end dates as MM/DD-MM/DD (e.g. 08/20-08/27), "
+        "or REMOVE and a number (e.g. REMOVE 1) to cancel one."
+    )
+    return "\n".join(lines)
 
 
 def _availability_screen(
@@ -804,7 +828,8 @@ def _handle_menu_availability(
     if choice in ("VACATION", "AWAY", "VACATION/AWAY"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_vacation", **carry})
         signal_client.send(
-            [priest["cell_number"]], "Reply with start and end dates as MM/DD-MM/DD (e.g. 08/20-08/27)."
+            [priest["cell_number"]],
+            _vacation_prompt(rotation, carry["target_priest_id"], priest["id"], carry["target_priest_name"]),
         )
     elif choice in ("DAY OFF", "DAYOFF"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_day_off", **carry})
@@ -973,36 +998,88 @@ def _parse_vacation_range(text: str) -> tuple[date, date] | None:
     return start, end
 
 
+_REMOVE_TRIP_RE = re.compile(r"^\s*(?:REMOVE|CANCEL|DELETE)\s*#?\s*(\d+)\s*$", re.IGNORECASE)
+
+
 def _handle_menu_vacation(
     text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
 ) -> None:
     target_id, target_name = pending["target_priest_id"], pending["target_priest_name"]
+    carry = {"target_priest_id": target_id, "target_priest_name": target_name}
+    cell = [priest["cell_number"]]
+    remove = _REMOVE_TRIP_RE.match(text)
+    if remove:
+        trips = rotation.upcoming_vacations(target_id)
+        n = int(remove.group(1))
+        if not 1 <= n <= len(trips):
+            signal_client.send(cell, "There's no trip with that number. " + _vacation_prompt(rotation, target_id, priest["id"], target_name))
+            return
+        trip = trips[n - 1]
+        try:
+            rotation.remove_vacation(
+                target_id,
+                date.fromisoformat(trip["start"]),
+                date.fromisoformat(trip["end"]),
+                triggered_by=f"signal:{priest['name']}",
+                reason="removed via menu",
+            )
+        except RotationError as exc:
+            signal_client.send(cell, f"Couldn't remove that: {exc}")
+            return
+        rotation.pop_pending_confirmation(priest["id"])
+        poss = _possessive(target_id, priest["id"], target_name, capitalize=True)
+        signal_client.send(cell, f"{poss} {_trip_span(trip)} trip is cancelled.")
+        _notify_target_if_different(
+            signal_client, rotation, priest, target_id, target_name,
+            f"{priest['name']} cancelled your {_trip_span(trip)} trip.",
+        )
+        return
     parsed = _parse_vacation_range(text)
     if parsed is None:
-        signal_client.send(
-            [priest["cell_number"]],
-            "Didn't recognize that. Reply with start and end dates as MM/DD-MM/DD (e.g. 08/20-08/27).",
-        )
+        signal_client.send(cell, "Didn't recognize that. " + _vacation_prompt(rotation, target_id, priest["id"], target_name))
         return
     start, end = parsed
     try:
-        rotation.set_vacation(target_id, start, end, triggered_by=f"signal:{priest['name']}", reason="set via menu")
+        trip = rotation.add_vacation(target_id, start, end, triggered_by=f"signal:{priest['name']}", reason="set via menu")
     except RotationError as exc:
-        signal_client.send([priest["cell_number"]], f"Couldn't set that: {exc}")
+        signal_client.send(cell, f"Couldn't set that: {exc}")
         return
-    rotation.pop_pending_confirmation(priest["id"])
     poss = _possessive(target_id, priest["id"], target_name, capitalize=True)
-    signal_client.send(
-        [priest["cell_number"]], f"{poss} vacation is set from {start.strftime('%m/%d')} to {end.strftime('%m/%d')}."
-    )
+    span_from, span_to = _mmdd(trip["start"]), _mmdd(trip["end"])
+    joined = ""
+    if (trip["start"], trip["end"]) != (start.isoformat(), end.isoformat()):
+        joined = " (joined with the trip already on file)"
+    rotation.set_pending_confirmation(priest["id"], {"type": "menu_vacation_more", **carry})
+    signal_client.send(cell, f"{poss} vacation is set from {span_from} to {span_to}{joined}. Add another trip? Y/N")
     _notify_target_if_different(
-        signal_client,
-        rotation,
-        priest,
-        target_id,
-        target_name,
-        f"{priest['name']} set your vacation from {start.strftime('%m/%d')} to {end.strftime('%m/%d')}.",
+        signal_client, rotation, priest, target_id, target_name,
+        f"{priest['name']} set your vacation from {span_from} to {span_to}.",
     )
+
+
+def _handle_menu_vacation_more(
+    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    target_id, target_name = pending["target_priest_id"], pending["target_priest_name"]
+    reply = text.strip().upper()
+    if reply in ("Y", "YES"):
+        rotation.set_pending_confirmation(
+            priest["id"], {"type": "menu_vacation", "target_priest_id": target_id, "target_priest_name": target_name}
+        )
+        signal_client.send([priest["cell_number"]], _vacation_prompt(rotation, target_id, priest["id"], target_name))
+        return
+    if reply in ("N", "NO", "DONE"):
+        rotation.pop_pending_confirmation(priest["id"])
+        trips = rotation.upcoming_vacations(target_id)
+        who = "you" if target_id == priest["id"] else target_name
+        spans = ", ".join(_trip_span(v) for v in trips) or "none"
+        signal_client.send([priest["cell_number"]], f"Done. Trips on file for {who}: {spans}.")
+        return
+    if _parse_vacation_range(text) is not None:
+        # Typed the next trip's dates straight away instead of Y.
+        _handle_menu_vacation(text, priest, pending, signal_client, rotation)
+        return
+    signal_client.send([priest["cell_number"]], "Reply Y to add another trip, or N if you're done.")
 
 
 def _settings_priest_choices(rotation: RotationManager) -> list[dict]:
@@ -1100,9 +1177,12 @@ def _expire_stale_menus(rotation: RotationManager, signal_client: SignalClient) 
     if not expired:
         return
     by_id = {p["id"]: p for p in rotation.current_order()}
-    for pid, _entry in expired:
+    for pid, entry in expired:
         target = by_id.get(pid)
         if target and target.get("cell_number"):
+            if entry.get("type") == "menu_vacation_more":
+                # The trip was already saved; only the "another?" question lapsed.
+                continue
             signal_client.send(
                 [target["cell_number"]],
                 "Cancelled — no reply for 5 minutes.",
@@ -1184,7 +1264,7 @@ def _handle_welcome_setup(
                     signal_client.send(cell, "Didn't recognize that. " + STEP_PROMPTS[step])
                     return
                 start, end = parsed_range
-                rotation.set_vacation(priest["id"], start, end, triggered_by=by, reason="welcome setup")
+                rotation.add_vacation(priest["id"], start, end, triggered_by=by, reason="welcome setup")
                 note = f"Vacation set from {start:%m/%d} to {end:%m/%d}."
         except RotationError as exc:
             note = f"Couldn't set that ({exc}); skipped for now."

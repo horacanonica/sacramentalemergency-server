@@ -234,12 +234,16 @@ def create_app(config: dict | None = None) -> Flask:
     @app.route("/priests/<priest_id>/vacation", methods=["POST"])
     @require_auth
     def set_vacation(priest_id):
+        """Add a trip, or with remove=1 cancel the trip with these dates."""
         start_str = request.form.get("start", "").strip()
         end_str = request.form.get("end", "").strip()
         try:
-            start = date.fromisoformat(start_str) if start_str else None
-            end = date.fromisoformat(end_str) if end_str else None
-            rotation.set_vacation(priest_id, start, end, triggered_by="web-dashboard")
+            start = date.fromisoformat(start_str)
+            end = date.fromisoformat(end_str)
+            if request.form.get("remove"):
+                rotation.remove_vacation(priest_id, start, end, triggered_by="web-dashboard")
+            else:
+                rotation.add_vacation(priest_id, start, end, triggered_by="web-dashboard")
         except (RotationError, ValueError) as exc:
             notifier.alert(f"Set vacation failed: {exc}")
         return redirect(url_for("dashboard"))

@@ -154,7 +154,9 @@ def _maybe_send_cover_prompts(
     for week_start in rotation.upcoming_cover_weeks(ring_day):
         send_cover_prompts(rotation, signal_client, week_start, "2day")
     followup = rotation.sunday_followup_week(now)
-    if followup is not None:
+    # A trip starting late in the week already had its 2-day prompt for
+    # next week; don't ask the same question again on Sunday.
+    if followup is not None and not rotation.cover_prompt_was_sent(followup, "2day"):
         send_cover_prompts(rotation, signal_client, followup, "sunday")
 
 
@@ -165,9 +167,9 @@ def _format_mmdd(iso_date_str: str) -> str:
 def _handle_vacations_starting(rotation: RotationManager, signal_client: SignalClient, today: date) -> None:
     order = rotation.current_order()
     for p in order:
-        vacation = p.get("vacation")
-        if vacation and vacation.get("start") == today.isoformat():
-            _start_vacation_flow(rotation, signal_client, p, order)
+        for vacation in p.get("vacations") or []:
+            if vacation.get("start") == today.isoformat():
+                _start_vacation_flow(rotation, signal_client, {**p, "vacation": vacation}, order)
 
 
 def _start_vacation_flow(

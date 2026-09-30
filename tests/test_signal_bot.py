@@ -1284,3 +1284,122 @@ def test_silenced_sender_still_gets_rotation_confirmation(priests_config, state_
 
     texts = {nums[0]: msg for nums, msg in signal_client.sent}
     assert texts[NUM_YOUNGTRAD].startswith("The priest on call has changed.")
+
+
+def _mmdd_range(start: date, end: date) -> str:
+    return f"{start:%m/%d}-{end:%m/%d}"
+
+
+def test_vacation_menu_adds_two_trips_with_add_another_loop(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+    today = california_today()
+    trip1 = (today + timedelta(days=20), today + timedelta(days=24))
+    trip2 = (today + timedelta(days=39), today + timedelta(days=42))
+
+    open_availability(signal_client, rotation, rc_driver, notifier)
+    for text in ("ME", "VACATION", _mmdd_range(*trip1)):
+        signal_client.queue_incoming(NUM_MARTIN, text)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert signal_client.sent[-1][1].endswith("Add another trip? Y/N")
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_vacation_more"
+
+    signal_client.queue_incoming(NUM_MARTIN, "Y")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    prompt = signal_client.sent[-1][1]
+    assert "Trips on file for you:" in prompt
+    assert f"1. {trip1[0]:%m/%d}–{trip1[1]:%m/%d}" in prompt
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_vacation"
+
+    signal_client.queue_incoming(NUM_MARTIN, _mmdd_range(*trip2))
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    signal_client.queue_incoming(NUM_MARTIN, "N")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert rotation.pending_confirmation("fr_martin") is None
+    done = signal_client.sent[-1][1]
+    assert done.startswith("Done. Trips on file for you:")
+    assert f"{trip2[0]:%m/%d}–{trip2[1]:%m/%d}" in done
+
+    assert rotation.upcoming_vacations("fr_martin") == [
+        {"start": trip1[0].isoformat(), "end": trip1[1].isoformat()},
+        {"start": trip2[0].isoformat(), "end": trip2[1].isoformat()},
+    ]
+
+
+def test_vacation_menu_accepts_next_dates_instead_of_y(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+    today = california_today()
+    trip1 = (today + timedelta(days=20), today + timedelta(days=24))
+    trip2 = (today + timedelta(days=39), today + timedelta(days=42))
+
+    open_availability(signal_client, rotation, rc_driver, notifier)
+    for text in ("ME", "VACATION", _mmdd_range(*trip1), _mmdd_range(*trip2)):
+        signal_client.queue_incoming(NUM_MARTIN, text)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert len(rotation.upcoming_vacations("fr_martin")) == 2
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_vacation_more"
+
+
+def test_vacation_menu_remove_cancels_one_trip(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    today = california_today()
+    trip1 = (today + timedelta(days=20), today + timedelta(days=24))
+    trip2 = (today + timedelta(days=39), today + timedelta(days=42))
+    rotation.add_vacation("fr_martin", *trip1, triggered_by="test")
+    rotation.add_vacation("fr_martin", *trip2, triggered_by="test")
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+
+    open_availability(signal_client, rotation, rc_driver, notifier)
+    for text in ("ME", "VACATION", "REMOVE 1"):
+        signal_client.queue_incoming(NUM_MARTIN, text)
+        _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert signal_client.sent[-1][1] == f"Your {trip1[0]:%m/%d}–{trip1[1]:%m/%d} trip is cancelled."
+    assert rotation.upcoming_vacations("fr_martin") == [
+        {"start": trip2[0].isoformat(), "end": trip2[1].isoformat()}
+    ]
+    assert rotation.pending_confirmation("fr_martin") is None
+
+
+def test_status_lists_every_upcoming_trip(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    today = california_today()
+    trip1 = (today + timedelta(days=20), today + timedelta(days=24))
+    trip2 = (today + timedelta(days=39), today + timedelta(days=42))
+    rotation.add_vacation("fr_martin", *trip1, triggered_by="test")
+    rotation.add_vacation("fr_martin", *trip2, triggered_by="test")
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+
+    signal_client.queue_incoming(NUM_MARTIN, "STATUS")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    body = signal_client.sent[0][1]
+    assert (
+        f"Fr James Martin SJ: {trip1[0]:%m/%d} until {trip1[1]:%m/%d}, {trip2[0]:%m/%d} until {trip2[1]:%m/%d}"
+        in body
+    )
+
+
+def test_unanswered_add_another_trip_question_lapses_quietly(priests_config, state_path, monkeypatch):
+    from app import signal_bot
+
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    today = california_today()
+    rotation.add_vacation("fr_martin", today + timedelta(days=20), today + timedelta(days=24), triggered_by="test")
+    rotation.set_pending_confirmation(
+        "fr_martin",
+        {"type": "menu_vacation_more", "target_priest_id": "fr_martin", "target_priest_name": "Fr James Martin SJ"},
+    )
+    monkeypatch.setattr(signal_bot, "PENDING_TIMEOUT_SECONDS", -1)
+    signal_bot._expire_stale_menus(rotation, signal_client)
+    assert rotation.pending_confirmation("fr_martin") is None
+    assert signal_client.sent == []
+    assert len(rotation.upcoming_vacations("fr_martin")) == 1

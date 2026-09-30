@@ -273,8 +273,8 @@ def _availability_line(p: dict[str, Any]) -> str:
     if p.get("day_of_recollection"):
         n = p["day_of_recollection"].get("ordinal")
         bits.append(f"recollection {n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n, 'th') } Wednesday")
-    if p.get("vacation"):
-        bits.append(f"vacation {p['vacation']['start']}..{p['vacation']['end']}")
+    for v in p.get("vacations") or ([p["vacation"]] if p.get("vacation") else []):
+        bits.append(f"vacation {v['start']}..{v['end']}")
     if p.get("manual_disabled"):
         bits.append("DISABLED")
     if p.get("notifications_muted"):

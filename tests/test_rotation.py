@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 
@@ -508,6 +509,40 @@ def test_cover_prompt_targets_remaining_priests_with_a_day_off(priests_config, s
     assert mgr.sunday_followup_week(sunday) is None  # vacation ended Aug 28
 
 
+def test_cover_prompt_for_sunday_start_trip_is_for_the_following_week(priests_config, state_path):
+    """A trip Sunday 11 Oct - Tuesday 13 Oct suspends the Monday 12 / Tuesday 13
+    day offs, so the prompt sent on ring-day 9 Oct must be for the week of
+    12 Oct, not the week of 5 Oct that ends on the Sunday."""
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    mgr.set_day_off("fr_martin", "Tuesday", triggered_by="test")
+    mgr.set_vacation("fr_bugnini", date(2026, 10, 11), date(2026, 10, 13), triggered_by="test")
+    assert mgr.upcoming_cover_weeks(date(2026, 10, 9)) == [date(2026, 10, 12)]
+    assert mgr.upcoming_cover_weeks(date(2026, 10, 10)) == [date(2026, 10, 12)]
+    targets = mgr.cover_prompt_targets(date(2026, 10, 12))
+    assert sorted(t["id"] for t in targets) == ["fr_martin", "fr_youngtrad"]
+    # No second prompt from the Sunday follow-up on the day the trip starts.
+    sunday = datetime(2026, 10, 11, 15, 0, tzinfo=CALIFORNIA_TZ)
+    assert mgr.sunday_followup_week(sunday) is None
+
+
+def test_moving_day_off_from_sunday_start_prompt_applies_to_trip_week(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    mgr.set_vacation("fr_bugnini", date(2026, 10, 11), date(2026, 10, 13), triggered_by="test")
+    (week,) = mgr.upcoming_cover_weeks(date(2026, 10, 9))
+    mgr.set_week_day_off_override(week, "fr_youngtrad", "move", weekday="Thursday", triggered_by="test")
+    avail = mgr._get_availability("fr_youngtrad")
+    assert mgr._day_off_applies("fr_youngtrad", avail, date(2026, 10, 15))  # Thursday
+    assert not mgr._day_off_applies("fr_youngtrad", avail, date(2026, 10, 12))  # Monday
+
+
+def test_one_day_sunday_trip_keeps_its_own_week(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_vacation("fr_bugnini", date(2026, 10, 11), date(2026, 10, 11), triggered_by="test")
+    assert mgr.upcoming_cover_weeks(date(2026, 10, 9)) == [date(2026, 10, 5)]
+
+
 def test_sunday_followup_when_vacation_spans_next_week(priests_config, state_path):
     mgr = make_manager(priests_config, state_path)
     mgr.set_vacation("fr_youngtrad", date(2026, 8, 24), date(2026, 9, 4), triggered_by="test")
@@ -719,3 +754,78 @@ def test_old_count_data_is_deleted_on_load(priests_config, state_path):
         assert key not in saved
     assert [h["action"] for h in saved["history"]] == ["rotate"]
 
+
+
+def test_add_vacation_keeps_earlier_trips(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.add_vacation("fr_martin", date(2026, 10, 19), date(2026, 10, 23), triggered_by="test")
+    mgr.add_vacation("fr_martin", date(2026, 11, 7), date(2026, 11, 10), triggered_by="test")
+    assert mgr.upcoming_vacations("fr_martin", date(2026, 10, 1)) == [
+        {"start": "2026-10-19", "end": "2026-10-23"},
+        {"start": "2026-11-07", "end": "2026-11-10"},
+    ]
+    assert not mgr.is_available("fr_martin", date(2026, 10, 20))
+    assert not mgr.is_available("fr_martin", date(2026, 11, 8))
+    assert mgr.is_available("fr_martin", date(2026, 11, 2))
+    # Reloading from disk keeps both.
+    again = make_manager(priests_config, state_path)
+    assert len(again.upcoming_vacations("fr_martin", date(2026, 10, 1))) == 2
+
+
+def test_overlapping_trips_are_merged(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.add_vacation("fr_martin", date(2026, 10, 19), date(2026, 10, 23), triggered_by="test")
+    trip = mgr.add_vacation("fr_martin", date(2026, 10, 22), date(2026, 10, 26), triggered_by="test")
+    assert trip == {"start": "2026-10-19", "end": "2026-10-26"}
+    assert mgr.upcoming_vacations("fr_martin", date(2026, 10, 1)) == [trip]
+
+
+def test_remove_vacation_leaves_the_other_trip(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.add_vacation("fr_martin", date(2026, 10, 19), date(2026, 10, 23), triggered_by="test")
+    mgr.add_vacation("fr_martin", date(2026, 11, 7), date(2026, 11, 10), triggered_by="test")
+    mgr.remove_vacation("fr_martin", date(2026, 10, 19), date(2026, 10, 23), triggered_by="test")
+    assert mgr.upcoming_vacations("fr_martin", date(2026, 10, 1)) == [{"start": "2026-11-07", "end": "2026-11-10"}]
+    with pytest.raises(RotationError):
+        mgr.remove_vacation("fr_martin", date(2026, 10, 19), date(2026, 10, 23), triggered_by="test")
+
+
+def test_old_single_vacation_state_loads_as_a_trip(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    state = json.loads(state_path.read_text())
+    state["availability"]["fr_martin"] = {"day_off": "Tuesday", "vacation": {"start": "2026-10-19", "end": "2026-10-23"}}
+    state_path.write_text(json.dumps(state))
+    mgr = make_manager(priests_config, state_path)
+    assert mgr.upcoming_vacations("fr_martin", date(2026, 10, 1)) == [{"start": "2026-10-19", "end": "2026-10-23"}]
+    mgr.add_vacation("fr_martin", date(2026, 11, 7), date(2026, 11, 10), triggered_by="test")
+    saved = json.loads(state_path.read_text())["availability"]["fr_martin"]
+    assert "vacation" not in saved
+    assert saved["vacations"] == [
+        {"start": "2026-10-19", "end": "2026-10-23"},
+        {"start": "2026-11-07", "end": "2026-11-10"},
+    ]
+
+
+def test_cover_prompt_fires_for_second_trip(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    mgr.add_vacation("fr_martin", date(2026, 10, 19), date(2026, 10, 23), triggered_by="test")
+    mgr.add_vacation("fr_martin", date(2026, 11, 9), date(2026, 11, 13), triggered_by="test")
+    assert mgr.upcoming_cover_weeks(date(2026, 11, 7)) == [date(2026, 11, 9)]
+    assert [t["id"] for t in mgr.cover_prompt_targets(date(2026, 11, 9))] == ["fr_youngtrad"]
+
+
+def test_cover_prompt_for_saturday_start_trip_targets_the_monday_it_covers(priests_config, state_path):
+    """7-10 Nov 2026 is Saturday-Tuesday: Youngtrad's Monday 9 Nov is the
+    day off it suspends, so the 5 Nov prompt is for the week of 9 Nov."""
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    mgr.add_vacation("fr_martin", date(2026, 11, 7), date(2026, 11, 10), triggered_by="test")
+    assert mgr.upcoming_cover_weeks(date(2026, 11, 5)) == [date(2026, 11, 9)]
+
+
+def test_cover_prompt_for_midweek_trip_stays_in_its_week(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_youngtrad", "Thursday", triggered_by="test")
+    mgr.add_vacation("fr_martin", date(2026, 11, 3), date(2026, 11, 10), triggered_by="test")
+    assert mgr.upcoming_cover_weeks(date(2026, 11, 1)) == [date(2026, 11, 2)]

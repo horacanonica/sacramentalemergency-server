@@ -133,3 +133,24 @@ def test_daily_loop_runs_monday_audit_once(priests_config, state_path, monkeypat
     assert signal_client.sent == [(["+19165550001"], "audit passed successfully.")]
     assert rotation.failsafe_active is False
     assert rotation.audit_in_progress is False
+
+
+def test_saturday_start_trip_is_asked_once_not_again_on_sunday(priests_config, state_path):
+    from datetime import datetime
+
+    from app.scheduler import _maybe_send_cover_prompts
+
+    rotation = make_manager(priests_config, state_path)
+    rotation.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    rotation.add_vacation("fr_martin", date(2026, 11, 7), date(2026, 11, 10), triggered_by="test")
+    signal_client = FakeSignalClient()
+    _maybe_send_cover_prompts(
+        rotation, signal_client, date(2026, 11, 5), datetime(2026, 11, 5, 9, 0, tzinfo=CALIFORNIA_TZ)
+    )
+    assert len(signal_client.sent) == 1
+    assert rotation.pending_confirmation("fr_youngtrad")["week_start"] == "2026-11-09"
+    rotation.pop_pending_confirmation("fr_youngtrad")
+    _maybe_send_cover_prompts(
+        rotation, signal_client, date(2026, 11, 8), datetime(2026, 11, 8, 15, 0, tzinfo=CALIFORNIA_TZ)
+    )
+    assert len(signal_client.sent) == 1

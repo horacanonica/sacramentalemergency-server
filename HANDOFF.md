@@ -224,16 +224,19 @@ SETTINGS → 5 / AVAILABILITY
              Automatic time off (your / Fr. X’s):
              1. Day off every Monday (next MM/DD)     ← only if set
              2. Recollection: 2nd Wednesday (next …)  ← only if set
-             Vacation: 08/24–08/28                    ← shown, not skippable
+             Vacations: 10/19–10/23, 11/07–11/10      ← shown, not skippable
 
              VACATION or AWAY
              DAY OFF
              RECOLLECTION
              SKIP          ← only if a day off or recollection is listed
 
-             ├─ VACATION / AWAY
-             │    └─ MM/DD-MM/DD   e.g. 08/20-08/27
-             │         (no NONE here — cannot clear vacation from Signal)
+             ├─ VACATION / AWAY    (lists trips on file first, numbered)
+             │    ├─ MM/DD-MM/DD   e.g. 08/20-08/27  → adds a trip
+             │    │    └─ “Add another trip? Y/N”
+             │    │         ├─ Y (or just the next dates) → back to VACATION / AWAY
+             │    │         └─ N → “Done. Trips on file …”
+             │    └─ REMOVE 1 / REMOVE 2 …  → cancels that trip
              │
              ├─ DAY OFF
              │    ├─ Monday / Mon / M / Tuesday / …
@@ -255,8 +258,7 @@ Also always: `HELP` (stay in menu), `CANCEL` (leave, save nothing).
 **The list at the top** is display only, except that `1` / `2` / `SKIP` skip the **next** occurrence. The recurring rule stays.
 
 **VACATION / AWAY**  
-Sets a date range this year. If the start date already passed, it is stored as next year. Ranges that wrap New Year’s are allowed. Starts 8:00 PM the evening before the first day, ends 8:00 PM on the last day.  
-The menu text says “set/clear,” but Signal **cannot clear** a vacation (no `NONE`). Clear it on the dashboard.
+A priest can have **any number of trips** (since 29 Sep 2026; before that a new trip silently replaced the old one). The menu first lists the trips on file, numbered. Reply with dates to add one; each trip is a date range this year (if the start date already passed, it is stored as next year; ranges that wrap New Year’s are allowed). After each trip the bot asks **“Add another trip? Y/N”**: `Y` (or simply the next dates) adds another, `N` finishes and lists what is on file. No answer for 5 minutes just ends the menu quietly; the trip is already saved. A trip that overlaps or touches one already on file is joined into one. `REMOVE 1` (or `CANCEL 1`) cancels trip 1. Each trip starts 8:00 PM the evening before its first day and ends 8:00 PM on its last day.
 
 **DAY OFF**  
 One recurring weekday. `NONE` clears it.
@@ -285,7 +287,7 @@ Welcome, Fr. X! Your name and number are on the Sacramental Emergency Line's rin
 RingCentral, so you are being added to this system. ...
 1 of 3 - Day off            (a weekday, or SKIP)
 2 of 3 - Day of recollection (1-5th Wednesday, or SKIP)
-3 of 3 - Vacation            (MM/DD-MM/DD, or SKIP)
+3 of 3 - Vacation            (MM/DD-MM/DD, or SKIP; more trips via Availability)
 SKIP ALL at any point skips the rest; all of it is under SETTINGS > 5 Availability.
 ```
 
@@ -522,10 +524,9 @@ Vacation itself cannot be SKIP’d from Availability; they are away.
 
 ## What Availability cannot do
 
-- Skip or cancel a vacation  
+- Skip a vacation (cancel it with `REMOVE` under VACATION instead)  
 - Skip more than the next one day off or recollection  
 - Move a day off to another weekday (only the vacation-cover prompt can do that, for one week)  
-- Clear a vacation (`NONE` works for day off and recollection only)  
 - Turn automation off (`DISABLE` is a top-level command)  
 - Take someone off the line by hand (dashboard “disable”)  
 - Change ring order, mute, add/remove priests (`ROTATE`; other Settings items)  
@@ -539,7 +540,7 @@ Same system, same saved state. Private-network access only; not on the public in
 
 - See saved order, who is off today  
 - Rotate (same rules as Signal `ROTATE`)  
-- Per priest: mute, day off, recollection, vacation, manual disable  
+- Per priest: mute, day off, recollection, manual disable; **Add trip** and one **Cancel trip** button per trip on file  
 - Add / remove / reorder priests (manual override of the saved order; next bot poll pushes the live ring)  
 - Turn automation on/off  
 - History log (including Monday audits)  
@@ -576,12 +577,12 @@ There is no subscribe-to-“this API will break” feed. For outages: [status.ri
 
 These are what the app will apply until someone changes them. STATUS and
 the dashboard only ever show a vacation while its end date hasn't passed
-yet. The app stores one vacation per priest, so a past trip disappears
-from the record once a new one is set; the 24–28 Aug note below is kept
+yet. Until 29 Sep 2026 the app stored one vacation per priest, so the
+24–28 Aug trips are no longer in the record; the note below is kept
 because it shows how a peer's vacation affects a day off.
 
 - **Fr Youngtrad FSSP** — day off Monday; 4th Wednesday recollection; was away 24–28 Aug 2026 (past)
-- **Fr James Martin SJ** — day off Tuesday; 3rd Wednesday recollection (skipping 21 Oct 2026); away 19–23 Oct 2026
+- **Fr James Martin SJ** — day off Tuesday; 3rd Wednesday recollection (skipping 21 Oct 2026); away 19–23 Oct 2026 and 7–10 Nov 2026 (the November trip was lost to the old one-trip limit and must be re-entered)
 - **Fr Bugnini SSPX** — no day off (removed 24 Sep 2026); 2nd Wednesday recollection; away 11–13 Oct 2026
 
 **Ordinary Mondays:** Youngtrad is off. The phone skips him; Martin and Bugnini ring.
@@ -590,9 +591,11 @@ because it shows how a peer's vacation affects a day off.
 
 **24–28 Aug 2026 (past):** Youngtrad and Martin were away. Bugnini was the only one left, so his Monday day off that week (he still had one then) was automatically cancelled. Two days before (ring-day 22 Aug) he was prompted anyway to confirm; no reply would have still left him ON, which is what you want.
 
-**11–13 Oct 2026:** Bugnini is away. Martin's Tuesday (13 Oct) and Youngtrad's Monday (12 Oct) day offs both get suspended for that week — during a peer's vacation, day offs default to skipped, not honored. Two days before (ring-day 9 Oct) both get the SKIP-or-move-your-day-off prompt; no reply leaves each of them ON that week, which is what you want. Known issue: the trip starts on a Sunday, so the prompt is filed under the week of 5 Oct. A SKIP reply changes nothing (they are ON anyway), but a reply moving the day off (e.g. THURSDAY) would apply to 5–11 Oct, not to 12–13 Oct.
+**11–13 Oct 2026:** Bugnini is away. Martin's Tuesday (13 Oct) and Youngtrad's Monday (12 Oct) day offs both get suspended for that week — during a peer's vacation, day offs default to skipped, not honored. Two days before (ring-day 9 Oct) both get the SKIP-or-move-your-day-off prompt; no reply leaves each of them ON that week, which is what you want. The trip starts on a Sunday; the prompt is for the week of 12 Oct, the week the day offs fall in (fixed 29 Sep 2026 — before, a Sunday start filed it under the week that was ending).
 
 **19–23 Oct 2026:** Martin is away. Youngtrad's Monday (19 Oct) day off is suspended the same way; his prompt comes on ring-day 17 Oct. Bugnini has no day off, so nothing changes for him.
+
+**7–10 Nov 2026:** Martin is away (Saturday–Tuesday). Youngtrad's Monday (9 Nov) day off is suspended; his prompt comes on ring-day 5 Nov.
 
 ---
 

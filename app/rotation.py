@@ -16,7 +16,7 @@ Persistence format (data/state.json):
   ],
   "availability": {
     "fr_bugnini": {"manual_disabled": false, "day_off": "Tuesday",
-                   "vacation": {"start": "2026-08-20", "end": "2026-08-27"},
+                   "vacations": [{"start": "2026-08-20", "end": "2026-08-27"}],
                    "day_of_recollection": {"ordinal": 2}},
     ...
   },
@@ -175,6 +175,31 @@ def _state_file_lock(path: Path) -> threading.RLock:
         return _state_locks.setdefault(key, threading.RLock())
 
 
+def vacation_list(avail: dict[str, Any] | None) -> list[dict[str, str]]:
+    """A priest's trips, oldest first. Reads the current `vacations` list
+    and the single `vacation` it replaced (29 Sep 2026), so old state
+    files, snapshots and deleted-priest records still load."""
+    if not avail:
+        return []
+    trips = list(avail.get("vacations") or [])
+    legacy = avail.get("vacation")
+    if legacy and legacy not in trips:
+        trips.append(legacy)
+    return sorted(
+        (dict(v) for v in trips if v and v.get("start") and v.get("end")),
+        key=lambda v: (v["start"], v["end"]),
+    )
+
+
+def _normalize_vacations(avail: dict[str, Any]) -> dict[str, Any]:
+    """Store trips only under `vacations`."""
+    if "vacation" not in avail and "vacations" in avail:
+        return avail
+    out = {k: v for k, v in avail.items() if k != "vacation"}
+    out["vacations"] = vacation_list(avail)
+    return out
+
+
 @dataclass
 class RotationManager:
     config_path: Path
@@ -246,7 +271,9 @@ class RotationManager:
                 h for h in state.get("history", []) if h.get("action") not in _REMOVED_COUNT_ACTIONS
             ]
             purge_counts = purge_counts or len(self._history) != len(state.get("history", []))
-            self._availability = state.get("availability", {})
+            self._availability = {
+                pid: _normalize_vacations(avail) for pid, avail in (state.get("availability") or {}).items()
+            }
             self._pending_confirmations = state.get("pending_confirmations", {})
             self._automation_enabled = state.get("automation_enabled", True)
             self._order_66_executed = state.get("order_66_executed", False)
@@ -444,7 +471,7 @@ class RotationManager:
         return {
             "manual_disabled": False,
             "day_off": None,
-            "vacation": None,
+            "vacations": [],
             "day_of_recollection": None,
             "notifications_muted": False,
         }
@@ -464,12 +491,9 @@ class RotationManager:
 
     @staticmethod
     def _on_vacation(avail: dict[str, Any], ring_day: date) -> bool:
-        vacation = avail.get("vacation")
-        if not vacation:
-            return False
-        start = date.fromisoformat(vacation["start"])
-        end = date.fromisoformat(vacation["end"])
-        return start <= ring_day <= end
+        return any(
+            date.fromisoformat(v["start"]) <= ring_day <= date.fromisoformat(v["end"]) for v in vacation_list(avail)
+        )
 
     def _hard_unavailable(self, avail: dict[str, Any], at: datetime, automation_enabled: bool) -> bool:
         """Away for a reason that cannot be skipped: manual disable, or vacation."""
@@ -663,7 +687,10 @@ class RotationManager:
         self._failsafe_active = bool(snapshot["failsafe_active"])
         self._last_notified_lead_id = snapshot["last_notified_lead_id"]
         self._last_applied_order = list(snapshot["last_applied_order"])
-        self._availability = json.loads(json.dumps(snapshot["availability"]))
+        self._availability = {
+            pid: _normalize_vacations(avail)
+            for pid, avail in json.loads(json.dumps(snapshot["availability"])).items()
+        }
         self._save()
 
     def record_audit_result(
@@ -886,6 +913,9 @@ class RotationManager:
             raise RotationError(f"unknown skip kind '{kind}'")
         return item
 
+    def cover_prompt_was_sent(self, week_start: date, kind: str) -> bool:
+        return f"{week_start.isoformat()}:{kind}" in self._cover_prompts_sent
+
     def mark_cover_prompt_sent(self, week_start: date, kind: str) -> bool:
         """Record that a cover prompt went out for this week. Returns
         False if that week+kind was already sent."""
@@ -904,12 +934,10 @@ class RotationManager:
         staying = []
         for pid in self._order:
             avail = self._get_availability(pid)
-            vacation = avail.get("vacation")
-            on_vacation_this_week = False
-            if vacation:
-                start = date.fromisoformat(vacation["start"])
-                end = date.fromisoformat(vacation["end"])
-                on_vacation_this_week = not (end < week_start or start > week_end)
+            on_vacation_this_week = any(
+                not (date.fromisoformat(v["end"]) < week_start or date.fromisoformat(v["start"]) > week_end)
+                for v in vacation_list(avail)
+            )
             record = next((p for p in self.current_order() if p["id"] == pid), {"id": pid, "name": pid})
             if on_vacation_this_week:
                 away.append(record)
@@ -919,7 +947,10 @@ class RotationManager:
             return []
         away_names = [p["name"] for p in away]
         vacation_end = max(
-            date.fromisoformat(self._get_availability(p["id"])["vacation"]["end"]) for p in away
+            date.fromisoformat(v["end"])
+            for p in away
+            for v in vacation_list(self._get_availability(p["id"]))
+            if not (date.fromisoformat(v["end"]) < week_start or date.fromisoformat(v["start"]) > week_end)
         )
         targets = []
         for p in staying:
@@ -943,16 +974,31 @@ class RotationManager:
         weeks = []
         seen: set[date] = set()
         for pid in self._order:
-            vacation = self._get_availability(pid).get("vacation")
-            if not vacation:
-                continue
-            start = date.fromisoformat(vacation["start"])
-            notice_day = start - timedelta(days=2)
-            if notice_day <= ring_day < start:
-                monday = week_monday(start)
-                if monday not in seen:
-                    seen.add(monday)
-                    weeks.append(monday)
+            day_offs = {
+                self._get_availability(other).get("day_off") for other in self._order if other != pid
+            } - {None}
+            for vacation in vacation_list(self._get_availability(pid)):
+                start = date.fromisoformat(vacation["start"])
+                end = date.fromisoformat(vacation["end"])
+                notice_day = start - timedelta(days=2)
+                if notice_day <= ring_day < start:
+                    # Weeks run Monday-Sunday, and a reply that moves a day
+                    # off applies to the prompt's week. So the prompt is for
+                    # the week of the first day off the trip actually lands
+                    # on: a Saturday-Tuesday trip touches the next week's
+                    # Monday, not the week that is ending.
+                    first_day = next(
+                        (
+                            start + timedelta(days=i)
+                            for i in range((end - start).days + 1)
+                            if (start + timedelta(days=i)).strftime("%A") in day_offs
+                        ),
+                        start,
+                    )
+                    monday = week_monday(first_day)
+                    if monday not in seen:
+                        seen.add(monday)
+                        weeks.append(monday)
         return weeks
 
     def sunday_followup_week(self, now: datetime) -> date | None:
@@ -963,13 +1009,11 @@ class RotationManager:
             return None
         next_monday = week_monday(at.date()) + timedelta(days=7)
         for pid in self._order:
-            vacation = self._get_availability(pid).get("vacation")
-            if not vacation:
-                continue
-            start = date.fromisoformat(vacation["start"])
-            end = date.fromisoformat(vacation["end"])
-            if start < at.date() and end >= next_monday:
-                return next_monday
+            for vacation in vacation_list(self._get_availability(pid)):
+                start = date.fromisoformat(vacation["start"])
+                end = date.fromisoformat(vacation["end"])
+                if start < at.date() and end >= next_monday:
+                    return next_monday
         return None
 
     def set_manual_disable(self, priest_id: str, disabled: bool, triggered_by: str, reason: str = "") -> None:
@@ -997,26 +1041,93 @@ class RotationManager:
     def set_vacation(
         self, priest_id: str, start: date | None, end: date | None, triggered_by: str, reason: str = ""
     ) -> None:
+        """Replace all of a priest's trips with this one (None, None clears
+        them all). Signal and the dashboard add trips with add_vacation."""
         if priest_id not in self._order:
             raise RotationError(f"priest id '{priest_id}' not found in active order")
         if (start is None) != (end is None):
             raise RotationError("vacation start and end must be set (or cleared) together")
         if start and end and start > end:
             raise RotationError("vacation start must be on or before end")
-
         vacation = {"start": start.isoformat(), "end": end.isoformat()} if start else None
-        new_avail = {**self._get_availability(priest_id), "vacation": vacation}
+        self._store_vacations(
+            priest_id,
+            [vacation] if vacation else [],
+            vacation,
+            action="set_vacation",
+            triggered_by=triggered_by,
+            reason=reason,
+        )
+
+    def add_vacation(
+        self, priest_id: str, start: date, end: date, triggered_by: str, reason: str = ""
+    ) -> dict[str, str]:
+        """Add a trip, keeping the others. A trip that overlaps or touches
+        one already on file is merged with it. Returns the stored trip."""
+        if priest_id not in self._order:
+            raise RotationError(f"priest id '{priest_id}' not found in active order")
+        if start > end:
+            raise RotationError("vacation start must be on or before end")
+        merged_start, merged_end = start, end
+        kept = []
+        for v in vacation_list(self._get_availability(priest_id)):
+            v_start, v_end = date.fromisoformat(v["start"]), date.fromisoformat(v["end"])
+            if v_start <= merged_end + timedelta(days=1) and merged_start <= v_end + timedelta(days=1):
+                merged_start, merged_end = min(merged_start, v_start), max(merged_end, v_end)
+            else:
+                kept.append(v)
+        trip = {"start": merged_start.isoformat(), "end": merged_end.isoformat()}
+        self._store_vacations(
+            priest_id, kept + [trip], trip, action="add_vacation", triggered_by=triggered_by, reason=reason
+        )
+        return trip
+
+    def remove_vacation(
+        self, priest_id: str, start: date, end: date, triggered_by: str, reason: str = ""
+    ) -> None:
+        if priest_id not in self._order:
+            raise RotationError(f"priest id '{priest_id}' not found in active order")
+        trip = {"start": start.isoformat(), "end": end.isoformat()}
+        trips = vacation_list(self._get_availability(priest_id))
+        if trip not in trips:
+            raise RotationError("that trip isn't on file")
+        trips.remove(trip)
+        self._store_vacations(priest_id, trips, trip, action="remove_vacation", triggered_by=triggered_by, reason=reason)
+
+    def upcoming_vacations(self, priest_id: str, on_date: date | datetime | None = None) -> list[dict[str, str]]:
+        """Trips that haven't ended yet, soonest first."""
+        today = effective_ring_date(california_now() if on_date is None else on_date)
+        return [
+            v for v in vacation_list(self._get_availability(priest_id)) if date.fromisoformat(v["end"]) >= today
+        ]
+
+    def _store_vacations(
+        self,
+        priest_id: str,
+        trips: list[dict[str, str]],
+        changed: dict[str, str] | None,
+        action: str,
+        triggered_by: str,
+        reason: str,
+    ) -> None:
         ring_day = effective_ring_date(california_now())
-        if vacation and start <= ring_day <= end:
+        trips = sorted(trips, key=lambda v: (v["start"], v["end"]))
+        new_avail = {**self._get_availability(priest_id), "vacations": trips}
+        new_avail.pop("vacation", None)
+        if (
+            action != "remove_vacation"
+            and changed
+            and date.fromisoformat(changed["start"]) <= ring_day <= date.fromisoformat(changed["end"])
+        ):
             self._validate_would_keep_coverage(priest_id, new_avail)
         self._availability[priest_id] = new_avail
         self._log(
-            "set_vacation",
+            action,
             triggered_by=triggered_by,
             reason=reason,
             priest_id=priest_id,
-            vacation_start=vacation["start"] if vacation else None,
-            vacation_end=vacation["end"] if vacation else None,
+            vacation_start=changed["start"] if changed else None,
+            vacation_end=changed["end"] if changed else None,
         )
         self._save()
 
@@ -1226,10 +1337,10 @@ class RotationManager:
             # dashboard's "Clear vacation" button still work on the real
             # data, and a new vacation can be set over a stale one same
             # as always. Purely a display filter.
-            vacation = avail.get("vacation")
-            if vacation and date.fromisoformat(vacation["end"]) < today:
-                vacation = None
-            record["vacation"] = vacation
+            upcoming = [v for v in vacation_list(avail) if date.fromisoformat(v["end"]) >= today]
+            record["vacations"] = upcoming
+            # The soonest trip, for readers that show just one.
+            record["vacation"] = upcoming[0] if upcoming else None
             record["day_of_recollection"] = avail.get("day_of_recollection")
             record["notifications_muted"] = avail.get("notifications_muted", False)
             # Added through the bot and not yet seen on RingCentral: the
@@ -1435,7 +1546,7 @@ class RotationManager:
         while record["id"] in existing:
             record["id"], n = f"{base}_{n}", n + 1
         self.add_priest(record, triggered_by=triggered_by, rc_new=rc_new)
-        avail = {**self._default_availability(), **entry.get("availability", {})}
+        avail = _normalize_vacations({**self._default_availability(), **entry.get("availability", {})})
         avail.pop("rc_new", None)
         if rc_new:
             avail["rc_new"] = True
