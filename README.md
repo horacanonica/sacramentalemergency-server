@@ -1,6 +1,6 @@
 # Sacramental Emergency Line Rotation
 
-**Continuing this work (Claude or anyone else):** read [`HANDOFF.md`](HANDOFF.md) first. Same guide as a PDF: [`HANDOFF.pdf`](HANDOFF.pdf).
+**Continuing this work (Claude or anyone else):** read [`HANDOFF.md`](HANDOFF.md) first.
 
 Automates rotating the priest ring order on the parish's Sacramental
 Emergency Line, pushing each change to RingCentral directly.
