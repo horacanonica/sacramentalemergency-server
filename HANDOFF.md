@@ -582,7 +582,7 @@ yet. Until 29 Sep 2026 the app stored one vacation per priest, so the
 because it shows how a peer's vacation affects a day off.
 
 - **Fr Youngtrad FSSP** — day off Monday; 4th Wednesday recollection; was away 24–28 Aug 2026 (past)
-- **Fr James Martin SJ** — day off Tuesday; 3rd Wednesday recollection (skipping 21 Oct 2026); away 19–23 Oct 2026 and 7–10 Nov 2026 (the November trip was lost to the old one-trip limit and must be re-entered)
+- **Fr James Martin SJ** — day off Tuesday; 3rd Wednesday recollection (skipping 21 Oct 2026); away 19–23 Oct 2026 and 7–10 Nov 2026
 - **Fr Bugnini SSPX** — no day off (removed 24 Sep 2026); 2nd Wednesday recollection; away 11–13 Oct 2026
 
 **Ordinary Mondays:** Youngtrad is off. The phone skips him; Martin and Bugnini ring.
