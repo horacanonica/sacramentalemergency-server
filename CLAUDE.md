@@ -1,6 +1,6 @@
 # Continuing this project
 
-Start here: **[HANDOFF.md](HANDOFF.md)** (PDF twin: `HANDOFF.pdf`).
+Start here: **[HANDOFF.md](HANDOFF.md)**.
 
 Pastor-facing reliability briefing: **[docs/RELIABILITY-FOR-PASTOR.md](docs/RELIABILITY-FOR-PASTOR.md)**.
 
@@ -13,8 +13,6 @@ wrote to. The driver was migrated to User Call Handling v2
 switch was applied, read back, and restored. Automatic scheduling has
 been **ON** since 24 Sep 2026 (the failsafe turned it off at 8 PM on
 29 Sep after a state-save race, since fixed; re-enabled the same night).
-
-Same copy also lives at `~/Downloads/Sacramental-Emergency-Line-Rotation.md` (and `.pdf`).
 
 ## What this repo is
 
