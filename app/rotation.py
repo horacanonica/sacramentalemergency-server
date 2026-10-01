@@ -571,7 +571,19 @@ class RotationManager:
         vacation all start at 8pm the evening before and end at 8pm
         the listed day. This is what gets pushed to RingCentral."""
         at = california_now() if on_date is None else on_date
-        return [p for p in self.current_order() if self.is_available(p["id"], at)]
+        order = [p for p in self.current_order() if self.is_available(p["id"], at)]
+        return self._apply_ring_last(order, effective_ring_date(at))
+
+    @staticmethod
+    def _apply_ring_last(order: list[dict[str, Any]], ring_day: date) -> list[dict[str, Any]]:
+        """Standing weekday rule from config/priests.yaml: a priest with
+        `ring_last_on: [Monday]` who would ring FIRST on that weekday is
+        moved to the end of the live ring, so someone else takes the
+        first call. Only the live ring changes, never the saved order.
+        No effect when he is the only one on the line."""
+        if len(order) < 2 or ring_day.strftime("%A") not in (order[0].get("ring_last_on") or []):
+            return order
+        return order[1:] + order[:1]
 
     def sync_lead_notification_state(self) -> str | None:
         """Returns the new effective lead's id if it differs from the
@@ -1376,6 +1388,14 @@ class RotationManager:
         """
         known = [pid for pid in live_ids if pid in self._order]
         if not known:
+            return
+        if known == [p["id"] for p in self.effective_order()]:
+            # Already the ring we would write (including any standing
+            # ring_last_on shift): nothing to adopt, and the saved order
+            # must not absorb that shift.
+            self._last_applied_order = list(known)
+            self._last_notified_lead_id = known[0]
+            self._save()
             return
         before = list(self._order)
         available = {pid for pid in self._order if self.is_available(pid)}

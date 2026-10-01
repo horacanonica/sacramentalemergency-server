@@ -18,6 +18,10 @@ priests:
     ring_count: 4
     active: true
 
+  # Optional standing rule: on these weekdays, if he would ring first, he rings
+  # last instead (live ring only; the saved order is unchanged). Example:
+  #   ring_last_on: [Monday]
+
   - id: fr_bugnini
     name: "Fr Bugnini SSPX"
     extension: ""

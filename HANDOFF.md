@@ -77,6 +77,8 @@ After 8:00 PM Wednesday that recollection ends and Bugnini is active again in wh
 **Mondays (Sunday 8:00 PM through Monday 8:00 PM):**  
 Bugnini and Youngtrad are both off. Martin’s day off is Tuesday, so he is on. If Bugnini or Youngtrad is saved #1, they stay #1 on paper but the line skips them and rings Martin. Martin always has Mondays unless he is away. If Martin is away that Monday, the last remaining priest stays on so the line is not empty.
 
+**Standing "ring last" rule (optional, per priest):** a priest can have `ring_last_on: [Monday]` in `config/priests.yaml`. On those weekdays (same 8:00 PM to 8:00 PM window), if he would ring **first**, he rings **last** instead, so someone else takes the first call. Example: saved Martin → Bugnini → Youngtrad with Martin set to `[Monday]` and Youngtrad off: the Monday line rings Bugnini, then Martin. Only the live ring changes; the saved order and `ROTATE` are untouched, and if he is the only one on the line he still rings. The Monday audit and the 8 PM check recognize this shifted ring and do not write it back into the saved order. Edit the file, then restart the bot (`docker compose restart`) to pick it up.
+
 A manual `ROTATE` moves saved #1 to the back. Everyone shifts, including priests who are off. They stay off the phone until 8:00 PM, then they take whatever seat they landed in (including #1). See [Manual rotate while automation is on](#manual-rotate-while-automation-is-on).
 
 ---

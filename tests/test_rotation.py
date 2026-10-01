@@ -829,3 +829,60 @@ def test_cover_prompt_for_midweek_trip_stays_in_its_week(priests_config, state_p
     mgr.set_day_off("fr_youngtrad", "Thursday", triggered_by="test")
     mgr.add_vacation("fr_martin", date(2026, 11, 3), date(2026, 11, 10), triggered_by="test")
     assert mgr.upcoming_cover_weeks(date(2026, 11, 1)) == [date(2026, 11, 2)]
+
+
+def _set_ring_last_on(priests_config: Path, priest_id: str, days: list[str]) -> None:
+    import yaml
+
+    data = yaml.safe_load(priests_config.read_text(encoding="utf-8"))
+    for p in data["priests"]:
+        if p["id"] == priest_id:
+            p["ring_last_on"] = days
+    priests_config.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def test_ring_last_on_moves_saved_lead_to_end_on_that_weekday(priests_config, state_path):
+    _set_ring_last_on(priests_config, "fr_martin", ["Monday"])
+    mgr = make_manager(priests_config, state_path)
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    tuesday = datetime(2026, 8, 25, 12, 0, tzinfo=CALIFORNIA_TZ)
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_youngtrad", "fr_martin"]
+    assert [p["id"] for p in mgr.effective_order(tuesday)] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]
+    # Sunday 8 PM already counts as Monday's ring.
+    sunday_8pm = datetime(2026, 8, 23, 20, 0, tzinfo=CALIFORNIA_TZ)
+    assert [p["id"] for p in mgr.effective_order(sunday_8pm)][-1] == "fr_martin"
+    # The saved order is untouched.
+    assert [p["id"] for p in mgr.current_order()] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]
+
+
+def test_ring_last_on_only_when_he_would_be_first(priests_config, state_path):
+    _set_ring_last_on(priests_config, "fr_martin", ["Monday"])
+    mgr = make_manager(priests_config, state_path)
+    mgr.rotate(triggered_by="test")  # saved: bugnini, youngtrad, martin
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_youngtrad", "fr_martin"]
+
+
+def test_ring_last_on_with_other_priest_off_and_when_alone(priests_config, state_path):
+    _set_ring_last_on(priests_config, "fr_martin", ["Monday"])
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_martin"]
+    mgr.set_vacation("fr_bugnini", date(2026, 8, 24), date(2026, 8, 24), triggered_by="test")
+    mgr.set_vacation("fr_youngtrad", date(2026, 8, 24), date(2026, 8, 24), triggered_by="test")
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_martin"]
+
+
+def test_adopting_the_shifted_live_ring_does_not_change_saved_order(priests_config, state_path, monkeypatch):
+    _set_ring_last_on(priests_config, "fr_martin", ["Monday"])
+    mgr = make_manager(priests_config, state_path)
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    monkeypatch.setattr("app.rotation.california_now", lambda: monday)
+    live = [p["id"] for p in mgr.effective_order()]
+    assert live[-1] == "fr_martin"
+    mgr.adopt_live_ring(live, triggered_by="system-audit")
+    assert [p["id"] for p in mgr.current_order()] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]
+    # A genuinely different hand-edited ring is still adopted.
+    mgr.adopt_live_ring(["fr_youngtrad", "fr_martin", "fr_bugnini"], triggered_by="system-audit")
+    assert [p["id"] for p in mgr.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]
