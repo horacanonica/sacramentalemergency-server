@@ -304,8 +304,8 @@ The bot reads RingCentral's call log every minute.
 - **Missed call, no voicemail:** the priests on the line get a text right away, day or night,
   with the caller's number, the time, and which phones rang, so someone can call back. It is
   never treated as spam, however many times the same number calls.
-- **`CALLS`:** calls in the last 24 hours, with full numbers. **`CALLS 30`:** the last 30 days
-  (last 4 digits only). **`CALLS REPORT`:** statistics for the year so far, plus a spreadsheet file. **`HISTORY`:** the last 3 calls of the past 24 hours, each with date, time and full number (or "No calls ... in the last 24 hours").
+- **`CALLS`:** the last 3 calls of the past 24 hours, each with date, time and full number (or "No calls ... in the last 24 hours"). **`CALLS ALL`:** every call in the past 24 hours. **`CALLS 30`:** the last 30 days
+  (last 4 digits only). **`CALLS REPORT`:** statistics for the year so far, plus a spreadsheet file.
 - **Monthly summary (1st of the month) and yearly summary (1 January):** call totals, who was
   #1 and for how many days, who answered.
 - **How calls arrive:** callers dial the main parish number and press 1, or a secretary answers the

@@ -67,8 +67,7 @@ HELP_TEXT = (
     "DISABLE / ENABLE - turn automatic day-off/vacation/recollection disabling off/on for everyone\n"
     "SETTINGS - availability, set the order, add, remove or restore a priest, audit log\n"
     "TROUBLESHOOT - something's wrong? Checks and fixes common problems, or sends a report\n"
-    "CALLS - calls to the line in the last 24 hours (CALLS 30 = last 30 days, CALLS REPORT = statistics)\n"
-    "HISTORY - the last 3 calls to the line in the past 24 hours, with date, time and number\n"
+    "CALLS - the last 3 calls to the line (past 24 hours), with date, time and number (CALLS ALL = every call in 24 hours, CALLS 30 = last 30 days, CALLS REPORT = statistics)\n"
     "ABOUT - a full explanation of how this all works\n"
     "HELP - show this message\n"
     "CANCEL - leave any menu without saving"
@@ -527,10 +526,10 @@ def _poll_once(
         elif command == "SETTINGS":
             rotation.set_pending_confirmation(priest["id"], {"type": "menu_settings"})
             signal_client.send([priest["cell_number"]], SETTINGS_MENU_TEXT)
+        elif command == "HISTORY":  # old name for CALLS, not shown in HELP
+            _handle_calls("CALLS", priest, rotation, signal_client)
         elif command == "CALLS" or command.startswith("CALLS "):
             _handle_calls(command, priest, rotation, signal_client)
-        elif command == "HISTORY":
-            signal_client.send([priest["cell_number"]], call_log.history_text(rotation.state_path.parent))
         elif command in ("TROUBLESHOOT", "TROUBLE", "HELP ME", "FIX"):
             troubleshoot.start(rotation, priest, _troubleshoot_tools(rotation, signal_client, rc_driver, notifier))
         elif command == "EXECUTE ORDER 66":
@@ -1776,12 +1775,14 @@ def _restore_priest_now(
 
 
 def _handle_calls(command: str, priest: dict, rotation: RotationManager, signal_client: SignalClient) -> None:
-    """CALLS: last 24 hours with full numbers. CALLS <days>: last 4 digits
-    only. CALLS REPORT: year-to-date statistics plus the call log as a file."""
+    """CALLS: last 3 calls of the past 24 hours with full numbers. CALLS ALL:
+    every call in the past 24 hours. CALLS <days>: last 4 digits only. CALLS REPORT: year-to-date statistics plus the call log as a file."""
     data_dir = rotation.state_path.parent
     arg = command[len("CALLS"):].strip()
     cell = [priest["cell_number"]]
     if not arg:
+        signal_client.send(cell, call_log.history_text(data_dir))
+    elif arg == "ALL":
         signal_client.send(cell, call_log.recent_text(data_dir))
     elif arg.isdigit() and 1 <= int(arg) <= 366:
         signal_client.send(cell, call_log.days_text(data_dir, int(arg)))
@@ -1791,7 +1792,7 @@ def _handle_calls(command: str, priest: dict, rotation: RotationManager, signal_
                            "(last 4 digits only); it opens in Excel or Google Sheets.",
                            attachments=[str(path)])
     else:
-        signal_client.send(cell, "CALLS = last 24 hours, CALLS 30 = last 30 days, CALLS REPORT = statistics.")
+        signal_client.send(cell, "CALLS = last 3 calls, CALLS ALL = last 24 hours, CALLS 30 = last 30 days, CALLS REPORT = statistics.")
 
 
 def _troubleshoot_tools(

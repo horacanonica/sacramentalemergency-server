@@ -121,7 +121,7 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
   via `config/staff-titles.yaml` (old RingCentral name → title). After editing these,
   re-import to relabel old calls: move `data/call-log.jsonl` and `data/call-sync.json`
   aside; the next sync imports the year again without alerts.
-  `CALLS` / `CALLS <days>` / `CALLS REPORT` / `HISTORY` (last 3 calls in 24 h, full numbers; `call_log.history_text`) in Signal; `sacline` → c.
+  `CALLS` (last 3 calls in 24 h, full numbers; `call_log.history_text`) / `CALLS ALL` (every call in 24 h) / `CALLS <days>` / `CALLS REPORT`; `HISTORY` is a hidden alias of `CALLS` in Signal; `sacline` → c.
 - Days as #1 (`app/ring_history.py`): replays RingCentral's audit trail of Ext. 1 ring
   changes (order, on/off, add/remove; kept ~6 months by RingCentral, copied hourly to
   `data/ring-history.jsonl` and kept for good). Before the audit trail starts (1 Apr
