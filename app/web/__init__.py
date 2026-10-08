@@ -13,6 +13,7 @@ import functools
 import os
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
 
@@ -22,6 +23,18 @@ from app.failsafe import enter_manual_failsafe
 from app.localtime import format_california
 from app.rotation import WEEKDAY_ORDER, RotationError, RotationManager
 from app.signal_client import SignalClient
+
+
+def same_origin(host: str, origin: str | None, referer: str | None) -> bool:
+    """CSRF guard for the dashboard's POSTs. Browsers resend the cached Basic
+    auth password on a cross-site form post, so a page on another site could
+    otherwise drive the dashboard. A browser always sends Origin (or at least
+    Referer) on such a post; if either names a different host it is refused.
+    Requests with neither header (curl, scripts) are not browser forms."""
+    for value in (origin, referer):
+        if value:
+            return urlsplit(value).netloc == host
+    return True
 
 
 def create_app(config: dict | None = None) -> Flask:
@@ -86,6 +99,13 @@ def create_app(config: dict | None = None) -> Flask:
         # state.json before every request so neither reads stale data
         # nor overwrites a change the other just made.
         rotation.reload()
+
+    @app.before_request
+    def _refuse_cross_site_posts():
+        if request.method == "POST" and not same_origin(
+            request.host, request.headers.get("Origin"), request.headers.get("Referer")
+        ):
+            return Response("Cross-site request refused.", 403)
 
     @app.route("/")
     @require_auth

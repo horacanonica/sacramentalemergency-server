@@ -55,6 +55,7 @@ print(f"{offer['id']} {offer['current']} {offer['latest']}" if ok else "- - -")
 PY
 )
 [ "$OFFER_ID" != "-" ] || exit 0
+[[ "$OFFER_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Refusing odd offer id: $OFFER_ID"; exit 1; }  # it becomes a file name below
 [ ! -e "$DONE_DIR/$OFFER_ID" ] || exit 0
 # Same 5 AM - 9 PM window as every other message to the priests. A "Y" sent
 # at night waits here; the 10-minute timer starts the update just after 5 AM.
