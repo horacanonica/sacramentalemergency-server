@@ -91,6 +91,8 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 - 8 PM check (`app/rc_sync.py`, added 27 Sep 2026): once per ring day, in `_sync_automatic_ring` just before tomorrow's ring is written, the bot reads the whole Ring in order list and compares it with what it last wrote (`last_applied_order` + roster). RingCentral is taken as correct: unknown numbers join the roster/allowlist, deleted legs leave it, a leg switched off by hand sets `manual_disabled` (switched on clears it), and a hand-changed order is adopted. Changes are texted to the unmuted priests; no change is only a `rc_check` history entry. Numbers not on the roster are still switched off by any write before 8 PM.
 - Unknown number texts the bot: before the "isn't authorized" reply, `_admit_if_on_ring` (signal_bot) reads the RingCentral ring list; if his number is on it he is admitted right away (`rc_sync.admit_ring_leg`, restores a 30-day-deleted record if there is one), the other priests are told, and he gets the welcome setup (`app/onboarding.py`, pending `welcome_setup`: day off → recollection → vacation, SKIP / SKIP ALL, 1-hour timeout). A restored priest gets "Welcome back" instead. Misses are not looked up again for 10 minutes. The 8 PM check sends the same welcome.
 - Standing weekday rule (`ring_last_on: [Monday]` on a priest in `config/priests.yaml`, added 1 Oct 2026): `RotationManager._apply_ring_last` (in `effective_order`) moves him to the end of the live ring on that ring day when he would otherwise be first. Live ring only; saved order untouched. `adopt_live_ring` skips a live ring equal to `effective_order()` so the Monday audit / 8 PM check never absorb the shift into the saved order. Read from the config file on each call, but restart the bot to be safe after editing.
+- One-time moves (7 Oct 2026): changing an existing day off or recollection through the Signal menu or the dashboard offers three choices: **skip this week's (this month's) one, move just this week/month, or move permanently**. Permanent = `set_day_off` / `set_day_of_recollection` (these also wipe that priest's pending one-time moves, never his skips). One-time = `move_day_off_this_week` (existing `week_day_off_overrides` "move") / `move_recollection_this_month` (new `recollection_month_overrides` `{"YYYY-MM": {priest_id: ordinal}}`, replaces the standing ordinal for that month only; old months are pruned on write). "This week/month" means the week/month of his NEXT occurrence, so once this week's day off (or this month's recollection) has passed the move goes to the next one: never two in one period. A target date already past, a missing 5th Wednesday, or a move that empties the line is refused. Skip = `scheduled_skip_targets` + `skip_scheduled_absence`. Signal pending types `menu_day_off_scope` / `menu_recollection_scope`. Tests: `tests/test_moves.py` (clock frozen).
+- "Finished with ...? Y/N" (7 Oct 2026): after a Settings or Availability reply that SAVED something and would have ended the menu, `_ask_if_finished` (signal_bot) asks `Finished with availability? Y/N` / `Finished with Settings? Y/N` (pending `menu_finished`); N returns to that menu (same priest for Availability), Y ends it, SETTINGS opens Settings. "Saved" = `RotationManager.change_count` (counts `_log` calls, not persisted) moved during the reply, or N to "Add another trip?". Nothing is asked after a cancel, an error, or View audit log. New menu handlers need no extra code, but a new pending type must be added to `_AVAILABILITY_MENU_TYPES` / `_SETTINGS_MENU_TYPES`.
 - Coverage floor: at least one priest on the line; last remaining priest stays on despite a day off.
 - No visit counting (removed 24 Sep 2026): no totals, no anointing log, no band-cross prompt. Rotation is `ROTATE` / dashboard only. Trip-report texts get a "no longer tracked" reply. Old count data is purged from state.json on load (`_REMOVED_COUNT_KEYS`).
 - `STATUS` lists names only and marks off-line priests `(inactive)` right after the name.
@@ -119,7 +121,7 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
   via `config/staff-titles.yaml` (old RingCentral name → title). After editing these,
   re-import to relabel old calls: move `data/call-log.jsonl` and `data/call-sync.json`
   aside; the next sync imports the year again without alerts.
-  `CALLS` / `CALLS <days>` / `CALLS REPORT` in Signal; `sacline` → c.
+  `CALLS` / `CALLS <days>` / `CALLS REPORT` / `HISTORY` (last 3 calls in 24 h, full numbers; `call_log.history_text`) in Signal; `sacline` → c.
 - Days as #1 (`app/ring_history.py`): replays RingCentral's audit trail of Ext. 1 ring
   changes (order, on/off, add/remove; kept ~6 months by RingCentral, copied hourly to
   `data/ring-history.jsonl` and kept for good). Before the audit trail starts (1 Apr
@@ -137,7 +139,7 @@ Dockerized Flask + threads app: Signal bot (`signal-cli` JSON-RPC), RingCentral 
 docker compose up -d --build
 ```
 
-Tests (from a venv with pytest): `pytest -q` — 261 passing as of 29 Sep 2026 (run before 8 PM, or with time-machine set to noon).
+Tests (from a venv with pytest): `pytest -q` — 315 passing as of 7 Oct 2026 (run before 8 PM, or with time-machine set to noon).
 
 Check which RingCentral backend the account is on before debugging any
 write failure:

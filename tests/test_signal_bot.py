@@ -240,7 +240,7 @@ def test_availability_menu_day_off_flow(priests_config, state_path):
 
     signal_client.queue_incoming(NUM_MARTIN, "Mon")
     _poll_once(signal_client, rotation, rc_driver, notifier)
-    assert rotation.pending_confirmation("fr_martin") is None
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_finished"
     martin = next(p for p in rotation.current_order() if p["id"] == "fr_martin")
     assert martin["day_off"] == "Monday"
 
@@ -268,8 +268,8 @@ def test_availability_menu_for_another_priest_sends_them_a_heads_up(priests_conf
     bugnini = next(p for p in rotation.current_order() if p["id"] == "fr_bugnini")
     assert bugnini["day_off"] == "Monday"
     # Martin (sender) got the confirmation, Bugnini (target) got a direct heads-up.
-    assert signal_client.sent[-2] == ([NUM_MARTIN], "Fr Bugnini SSPX's day off is now set to Monday.")
-    assert signal_client.sent[-1] == ([NUM_BUGNINI], "Fr James Martin SJ set your day off to Monday.")
+    assert signal_client.sent[-3] == ([NUM_MARTIN], "Fr Bugnini SSPX's day off is now set to Monday.")
+    assert signal_client.sent[-2] == ([NUM_BUGNINI], "Fr James Martin SJ set your day off to Monday.")
 
 
 def test_availability_screen_lists_automatic_days_and_skip(priests_config, state_path, monkeypatch):
@@ -309,8 +309,8 @@ def test_availability_skip_one_item_stays_on(priests_config, state_path, monkeyp
     signal_client.queue_incoming(NUM_MARTIN, "SKIP")
     _poll_once(signal_client, rotation, rc_driver, notifier)
 
-    assert "stay on the line Tuesday" in signal_client.sent[-1][1]
-    assert rotation.pending_confirmation("fr_martin") is None
+    assert "stay on the line Tuesday" in signal_client.sent[-2][1]
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_finished"
     tuesday = datetime(2026, 8, 18, 12, 0, tzinfo=CALIFORNIA_TZ)
     assert rotation.is_available("fr_martin", on_date=tuesday) is True
 
@@ -338,8 +338,8 @@ def test_availability_skip_with_two_items_asks_which(priests_config, state_path,
 
     signal_client.queue_incoming(NUM_MARTIN, "2")
     _poll_once(signal_client, rotation, rc_driver, notifier)
-    assert "recollection is skipped" in signal_client.sent[-2][1]
-    assert "skipped your recollection" in signal_client.sent[-1][1].lower()
+    assert "recollection is skipped" in signal_client.sent[-3][1]
+    assert "skipped your recollection" in signal_client.sent[-2][1].lower()
     wed = datetime(2026, 8, 12, 12, 0, tzinfo=CALIFORNIA_TZ)
     assert rotation.is_available("fr_bugnini", on_date=wed) is True
 
@@ -374,11 +374,11 @@ def test_availability_menu_recollection_flow_confirms_actual_date(priests_config
 
     signal_client.queue_incoming(NUM_MARTIN, "3")
     _poll_once(signal_client, rotation, rc_driver, notifier)
-    assert rotation.pending_confirmation("fr_martin") is None
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_finished"
     martin = next(p for p in rotation.current_order() if p["id"] == "fr_martin")
     assert martin["day_of_recollection"] == {"ordinal": 3}
 
-    confirm_msg = signal_client.sent[-1][1]
+    confirm_msg = signal_client.sent[-2][1]
     assert "3rd Wednesday" in confirm_msg
     assert "next day of recollection will be" in confirm_msg
 
@@ -797,8 +797,8 @@ def test_settings_add_priest_yes_saves(priests_config, state_path):
     assert "Fr. Smith" in names
     smith = next(p for p in rotation.current_order() if p["name"] == "Fr. Smith")
     assert smith["cell_number"] == "+19165559999"
-    assert "Saved" in signal_client.sent[-1][1]
-    assert "can text the bot" in signal_client.sent[-1][1]
+    assert "Saved" in signal_client.sent[-2][1]
+    assert "can text the bot" in signal_client.sent[-2][1]
 
     signal_client.queue_incoming("+19165559999", "STATUS")
     _poll_once(signal_client, rotation, rc_driver, notifier)
@@ -867,8 +867,8 @@ def test_settings_remove_priest_yes_removes(priests_config, state_path):
 
     ids = [p["id"] for p in rotation.current_order()]
     assert "fr_bugnini" not in ids
-    assert "has been deleted" in signal_client.sent[-1][1]
-    assert "can no longer text the bot" in signal_client.sent[-1][1]
+    assert "has been deleted" in signal_client.sent[-2][1]
+    assert "can no longer text the bot" in signal_client.sent[-2][1]
 
     signal_client.queue_incoming(NUM_BUGNINI, "STATUS")
     _poll_once(signal_client, rotation, rc_driver, notifier)
@@ -1014,7 +1014,7 @@ def test_set_order_by_numbers_saves_and_tells_everyone(priests_config, state_pat
     signal_client.queue_incoming(NUM_MARTIN, "Y")
     _poll_once(signal_client, rotation, rc_driver, notifier)
     assert [p["id"] for p in rotation.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]
-    texts = {nums[0]: msg for nums, msg in signal_client.sent}
+    texts = {nums[0]: msg for nums, msg in signal_client.sent if not msg.startswith("Finished with")}
     assert texts[NUM_YOUNGTRAD].startswith("You are now on call.")
     assert texts[NUM_YOUNGTRAD].endswith(" 🫡")
     assert texts[NUM_MARTIN].startswith(
@@ -1120,7 +1120,7 @@ def test_settings_restore_priest_brings_back_his_schedule(priests_config, state_
     assert back["day_off"] == "Thursday" and back["rc_new"]
     assert rotation.deleted_priests() == []
     assert any(nums == [NUM_BUGNINI] and m.startswith("Welcome back") for nums, m in signal_client.sent)
-    assert "is back in the rotation" in signal_client.sent[-1][1]
+    assert "is back in the rotation" in signal_client.sent[-2][1]
 
 
 def test_settings_restore_with_nothing_deleted(priests_config, state_path):
@@ -1317,8 +1317,8 @@ def test_vacation_menu_adds_two_trips_with_add_another_loop(priests_config, stat
     _poll_once(signal_client, rotation, rc_driver, notifier)
     signal_client.queue_incoming(NUM_MARTIN, "N")
     _poll_once(signal_client, rotation, rc_driver, notifier)
-    assert rotation.pending_confirmation("fr_martin") is None
-    done = signal_client.sent[-1][1]
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_finished"
+    done = signal_client.sent[-2][1]
     assert done.startswith("Done. Trips on file for you:")
     assert f"{trip2[0]:%m/%d}–{trip2[1]:%m/%d}" in done
 
@@ -1360,11 +1360,11 @@ def test_vacation_menu_remove_cancels_one_trip(priests_config, state_path):
     for text in ("ME", "VACATION", "REMOVE 1"):
         signal_client.queue_incoming(NUM_MARTIN, text)
         _poll_once(signal_client, rotation, rc_driver, notifier)
-    assert signal_client.sent[-1][1] == f"Your {trip1[0]:%m/%d}–{trip1[1]:%m/%d} trip is cancelled."
+    assert signal_client.sent[-2][1] == f"Your {trip1[0]:%m/%d}–{trip1[1]:%m/%d} trip is cancelled."
     assert rotation.upcoming_vacations("fr_martin") == [
         {"start": trip2[0].isoformat(), "end": trip2[1].isoformat()}
     ]
-    assert rotation.pending_confirmation("fr_martin") is None
+    assert rotation.pending_confirmation("fr_martin") ["type"] == "menu_finished"
 
 
 def test_status_lists_every_upcoming_trip(priests_config, state_path):

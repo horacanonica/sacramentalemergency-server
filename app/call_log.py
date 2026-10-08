@@ -564,6 +564,15 @@ def recent_text(data_dir: Path) -> str:
     return "Calls in the last 24 hours (newest first):\n" + "\n".join(_line(c, True) for c in reversed(rows))
 
 
+def history_text(data_dir: Path, count: int = 3) -> str:
+    """The last `count` calls of the past 24 hours, with full numbers."""
+    rows = recent_calls(data_dir)[-count:]
+    if not rows:
+        return "No calls to the Emergency Line in the last 24 hours."
+    return (f"Last {len(rows)} call{'s' if len(rows) != 1 else ''} in the past 24 hours (newest first):\n"
+            + "\n".join(_line(c, True) for c in reversed(rows)))
+
+
 def days_text(data_dir: Path, days: int, limit: int = 40) -> str:
     rows = calls(data_dir, since=california_now() - timedelta(days=days))
     if not rows:

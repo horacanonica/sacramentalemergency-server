@@ -118,7 +118,7 @@ This lets an AI read the bot's code on the server and fix it with you.
 ## Calls to the line
 
 - Text **CALLS** for the last 24 hours, with full numbers. **CALLS 30** gives the last 30 days
-  (last 4 digits only). **CALLS REPORT** gives statistics plus a spreadsheet.
+  (last 4 digits only). **CALLS REPORT** gives statistics plus a spreadsheet. **HISTORY** gives the last 3 calls of the past 24 hours with date, time and number.
 - On the server: `sudo sacline` → **c**.
 - In the RingCentral app, signed in as the Sacramental Emergency Line extension: the call history
   shows full numbers for as long as RingCentral keeps them.

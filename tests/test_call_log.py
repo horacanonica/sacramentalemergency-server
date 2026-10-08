@@ -269,3 +269,21 @@ def test_calls_commands(priests_config, state_path):
     assert any(t.startswith("Calls to the Emergency Line") for t in texts)
     csv_files = list((state_path.parent / "reports").glob("calls-*.csv"))
     assert csv_files and "5555550123" not in csv_files[0].read_text()
+
+
+def test_history_command_last_three_in_24_hours(priests_config, state_path):
+    from tests.test_signal_bot import FakeSignalClient, NUM_MARTIN, _poll_once, make_notifier, RecordingDriver
+    from app.localtime import effective_ring_date
+
+    rotation = make(priests_config, state_path)
+    rotation.mark_rc_check(effective_ring_date())
+    sc = FakeSignalClient()
+    sc.queue_incoming(NUM_MARTIN, "HISTORY")
+    _poll_once(sc, rotation, RecordingDriver(), make_notifier(sc))
+    assert sc.sent[-1][1] == "No calls to the Emergency Line in the last 24 hours."
+
+    cl.sync_and_alert(rotation, Sig(), Driver([missed_no_vm()]))
+    sc.queue_incoming(NUM_MARTIN, "HISTORY")
+    _poll_once(sc, rotation, RecordingDriver(), make_notifier(sc))
+    text = sc.sent[-1][1]
+    assert text.startswith("Last 1 call in the past 24 hours") and "(555) 555-0123 - MISSED, no voicemail" in text

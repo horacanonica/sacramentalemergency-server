@@ -221,12 +221,25 @@ def create_app(config: dict | None = None) -> Flask:
             notifier.alert(f"Set notification mute failed: {exc}")
         return redirect(url_for("dashboard"))
 
+    def _skip_next_of_kind(priest_id, kind):
+        """Stay on the line for his next day off / recollection only."""
+        item = next((t for t in rotation.scheduled_skip_targets(priest_id) if t["kind"] == kind), None)
+        if item is None:
+            raise RotationError("There isn't one coming up to skip.")
+        rotation.skip_scheduled_absence(priest_id, item, triggered_by="web-dashboard")
+
     @app.route("/priests/<priest_id>/day-off", methods=["POST"])
     @require_auth
     def set_day_off(priest_id):
         weekday = request.form.get("day_off", "").strip() or None
         try:
-            rotation.set_day_off(priest_id, weekday, triggered_by="web-dashboard")
+            scope = request.form.get("scope")
+            if scope == "skip":
+                _skip_next_of_kind(priest_id, "day_off")
+            elif weekday and scope == "once":
+                rotation.move_day_off_this_week(priest_id, weekday, triggered_by="web-dashboard")
+            else:
+                rotation.set_day_off(priest_id, weekday, triggered_by="web-dashboard")
         except RotationError as exc:
             notifier.alert(f"Set day off failed: {exc}")
         return redirect(url_for("dashboard"))
@@ -254,7 +267,13 @@ def create_app(config: dict | None = None) -> Flask:
         ordinal_str = request.form.get("ordinal", "").strip()
         try:
             ordinal = int(ordinal_str) if ordinal_str else None
-            rotation.set_day_of_recollection(priest_id, ordinal, triggered_by="web-dashboard")
+            scope = request.form.get("scope")
+            if scope == "skip":
+                _skip_next_of_kind(priest_id, "recollection")
+            elif ordinal and scope == "once":
+                rotation.move_recollection_this_month(priest_id, ordinal, triggered_by="web-dashboard")
+            else:
+                rotation.set_day_of_recollection(priest_id, ordinal, triggered_by="web-dashboard")
         except (RotationError, ValueError) as exc:
             notifier.alert(f"Set day of recollection failed: {exc}")
         return redirect(url_for("dashboard"))

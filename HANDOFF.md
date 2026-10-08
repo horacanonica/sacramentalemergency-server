@@ -263,13 +263,15 @@ Also always: `HELP` (stay in menu), `CANCEL` (leave, save nothing).
 A priest can have **any number of trips** (since 29 Sep 2026; before that a new trip silently replaced the old one). The menu first lists the trips on file, numbered. Reply with dates to add one; each trip is a date range this year (if the start date already passed, it is stored as next year; ranges that wrap New Year’s are allowed). After each trip the bot asks **“Add another trip? Y/N”**: `Y` (or simply the next dates) adds another, `N` finishes and lists what is on file. No answer for 5 minutes just ends the menu quietly; the trip is already saved. A trip that overlaps or touches one already on file is joined into one. `REMOVE 1` (or `CANCEL 1`) cancels trip 1. Each trip starts 8:00 PM the evening before its first day and ends 8:00 PM on its last day.
 
 **DAY OFF**  
-One recurring weekday. `NONE` clears it.
+One recurring weekday. `NONE` clears it. If he already has a day off and you give a different day, the bot offers three choices: **1. Skip this week's day off** (stay on the line; the regular day comes back after), **2. Move just this week** to the new day, or **3. Move permanently**. Once this week's day off has passed, “this week” means next week's, so nobody gets two days off in one week. A day already past this week is refused. The dashboard has the same three choices in a dropdown next to “Set day off”.
 
 **RECOLLECTION**  
-Which Wednesday of each month (1st–5th). If a month has no 5th Wednesday, that month is skipped. `NONE` clears it.
+Which Wednesday of each month (1st–5th). If a month has no 5th Wednesday, that month is skipped. `NONE` clears it. If he already has one and you give a different Wednesday, the bot offers three choices: **1. Skip this month's recollection**, **2. Move just this month** to the new Wednesday, or **3. Move permanently**. A one-month move replaces that month's date only (his regular Wednesday that month is not also taken), and the regular one applies again the next month. Once this month's has passed, “this month” means next month's. A date already past, or a month with no such Wednesday, is refused. The dashboard has the same three choices in a dropdown next to “Set recollection”. STATUS and the dashboard show a pending one-time move.
 
 **SKIP**  
 Stay on the line for **one upcoming** day off **or** one upcoming recollection. Next week / next month the rule applies again. Vacation cannot be skipped this way.
+
+**Finished with …? (Y/N).** Once a change in SETTINGS (add / remove / restore a priest, set order) or in Availability (day off, recollection, skip, trips) is saved, the bot asks **“Finished with Settings? Y/N”** (or **“Finished with availability? Y/N”**, naming the priest if it is someone else's). **N** goes back to that menu so you can make another change (for availability, the same priest); **Y** (or no answer) ends it. Nothing is asked after a cancel, an error, or viewing the audit log.
 
 If you change **another** priest, they get a direct text (even if muted).
 
@@ -303,7 +305,7 @@ The bot reads RingCentral's call log every minute.
   with the caller's number, the time, and which phones rang, so someone can call back. It is
   never treated as spam, however many times the same number calls.
 - **`CALLS`:** calls in the last 24 hours, with full numbers. **`CALLS 30`:** the last 30 days
-  (last 4 digits only). **`CALLS REPORT`:** statistics for the year so far, plus a spreadsheet file.
+  (last 4 digits only). **`CALLS REPORT`:** statistics for the year so far, plus a spreadsheet file. **`HISTORY`:** the last 3 calls of the past 24 hours, each with date, time and full number (or "No calls ... in the last 24 hours").
 - **Monthly summary (1st of the month) and yearly summary (1 January):** call totals, who was
   #1 and for how many days, who answered.
 - **How calls arrive:** callers dial the main parish number and press 1, or a secretary answers the

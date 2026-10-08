@@ -144,6 +144,10 @@ def next_recollection_date(ordinal: int, after: date) -> date:
             year += 1
 
 
+def _ordinal_suffix(n: int) -> str:
+    return {1: "st", 2: "nd", 3: "rd"}.get(n, "th")
+
+
 def _read_json_object(path: Path) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         state = json.load(f)
@@ -221,9 +225,16 @@ class RotationManager:
     _audit_log: list[dict[str, Any]] = field(default_factory=list, init=False)
     _week_day_off_overrides: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _recollection_skips: dict[str, list[str]] = field(default_factory=dict, init=False)
+    # One-month recollection moves: {"YYYY-MM": {priest_id: ordinal}}. For
+    # that month the override replaces the priest's standing ordinal; the
+    # standing setting is untouched and applies again the next month.
+    _recollection_month_overrides: dict[str, dict[str, int]] = field(default_factory=dict, init=False)
     _cover_prompts_sent: dict[str, str] = field(default_factory=dict, init=False)
     _failsafe_active: bool = field(default=False, init=False)
     _signal_down_alerted: bool = field(default=False, init=False)
+    # Counts logged changes in this process (not saved). The Signal menus
+    # compare it before and after a reply to learn whether it changed anything.
+    change_count: int = field(default=0, init=False)
     # Ring day (ISO date) of the last 8 PM check for hand edits in
     # RingCentral (app/rc_sync.py).
     _last_rc_check: str | None = field(default=None, init=False)
@@ -307,6 +318,10 @@ class RotationManager:
             self._recollection_skips = {
                 key: list(ids) for key, ids in (state.get("recollection_skips") or {}).items()
             }
+            self._recollection_month_overrides = {
+                key: {pid: int(n) for pid, n in (moves or {}).items()}
+                for key, moves in (state.get("recollection_month_overrides") or {}).items()
+            }
             self._cover_prompts_sent = state.get("cover_prompts_sent", {})
             self._failsafe_active = bool(state.get("failsafe_active", False))
             self._signal_down_alerted = bool(state.get("signal_down_alerted", False))
@@ -332,6 +347,7 @@ class RotationManager:
             self._audit_log = []
             self._week_day_off_overrides = {}
             self._recollection_skips = {}
+            self._recollection_month_overrides = {}
             self._cover_prompts_sent = {}
             self._failsafe_active = False
             self._signal_down_alerted = False
@@ -357,6 +373,7 @@ class RotationManager:
             "audit_log": self._audit_log,
             "week_day_off_overrides": self._week_day_off_overrides,
             "recollection_skips": self._recollection_skips,
+            "recollection_month_overrides": self._recollection_month_overrides,
             "cover_prompts_sent": self._cover_prompts_sent,
             "failsafe_active": self._failsafe_active,
             "signal_down_alerted": self._signal_down_alerted,
@@ -459,6 +476,7 @@ class RotationManager:
             **extra,
         }
         self._history.append(entry)
+        self.change_count += 1
 
     # ---------- availability ----------
 
@@ -479,15 +497,24 @@ class RotationManager:
     def _get_availability(self, priest_id: str) -> dict[str, Any]:
         return self._availability.get(priest_id, self._default_availability())
 
-    @staticmethod
-    def _is_recollection_active(avail: dict[str, Any], at: datetime) -> bool:
+    def _recollection_ordinal_for(self, avail: dict[str, Any], priest_id: str | None, year: int, month: int) -> int | None:
+        """The ordinal in force for a month: a one-month move if there is
+        one, otherwise the standing setting."""
+        if priest_id:
+            moved = self._recollection_month_overrides.get(f"{year:04d}-{month:02d}", {}).get(priest_id)
+            if moved:
+                return int(moved)
         recollection = avail.get("day_of_recollection")
-        if not recollection:
-            return False
+        return int(recollection["ordinal"]) if recollection else None
+
+    def _is_recollection_active(self, avail: dict[str, Any], at: datetime, priest_id: str | None = None) -> bool:
         ring_day = effective_ring_date(at)
         if ring_day.weekday() != WEDNESDAY_INDEX:
             return False
-        return (ring_day.day - 1) // 7 + 1 == recollection["ordinal"]
+        ordinal = self._recollection_ordinal_for(avail, priest_id, ring_day.year, ring_day.month)
+        if not ordinal:
+            return False
+        return (ring_day.day - 1) // 7 + 1 == ordinal
 
     @staticmethod
     def _on_vacation(avail: dict[str, Any], ring_day: date) -> bool:
@@ -538,7 +565,7 @@ class RotationManager:
             return False
         if not automation_enabled:
             return True
-        soft_off = self._is_recollection_active(avail, at)
+        soft_off = self._is_recollection_active(avail, at, priest_id)
         if priest_id and soft_off and self._is_recollection_skipped(priest_id, ring_day):
             soft_off = False
         if priest_id:
@@ -862,51 +889,215 @@ class RotationManager:
         )
         self._save()
 
+    # ---------- one-time moves: this week / this month ----------
+
+    def _effective_recollection_date(self, priest_id: str, year: int, month: int) -> date | None:
+        ordinal = self._recollection_ordinal_for(self._get_availability(priest_id), priest_id, year, month)
+        return nth_weekday_of_month(year, month, WEDNESDAY_INDEX, ordinal) if ordinal else None
+
+    def standing_day_off(self, priest_id: str) -> str | None:
+        return self._get_availability(priest_id).get("day_off")
+
+    def standing_recollection(self, priest_id: str) -> int | None:
+        return (self._get_availability(priest_id).get("day_of_recollection") or {}).get("ordinal")
+
+    def next_recollection(self, priest_id: str, after: date | None = None) -> date | None:
+        """The next real recollection date on or after `after`, with
+        one-month moves and skipped dates taken into account. None if the
+        priest has no recollection."""
+        after = after or effective_ring_date()
+        year, month = after.year, after.month
+        for _ in range(18):
+            candidate = self._effective_recollection_date(priest_id, year, month)
+            if candidate and candidate >= after and not self._is_recollection_skipped(priest_id, candidate):
+                return candidate
+            month += 1
+            if month > 12:
+                year, month = year + 1, 1
+        return None
+
+    def next_day_off(self, priest_id: str, after: date | None = None) -> tuple[date, date | None]:
+        """(Monday of the week, the day) of this priest's next day off,
+        counting one-week moves and skips. The day is None when he has no
+        standing day off; the week is then the current one."""
+        after = after or effective_ring_date()
+        standing = self._get_availability(priest_id).get("day_off")
+        week = week_monday(after)
+        if not standing:
+            has_move = (self._week_day_off_overrides.get(week.isoformat(), {}).get(priest_id) or {}).get("action") == "move"
+            if not has_move:
+                return week, None
+        for _ in range(10):
+            override = self._week_day_off_overrides.get(week.isoformat(), {}).get(priest_id) or {}
+            if override.get("action") == "move":
+                weekday = override.get("weekday")
+            elif override.get("action") == "skip":
+                weekday = None
+            else:
+                weekday = standing
+            if weekday:
+                day = week + timedelta(days=WEEKDAY_ORDER.index(weekday))
+                if day >= after:
+                    return week, day
+            week += timedelta(days=7)
+        return week_monday(after), None
+
+    def move_day_off_this_week(self, priest_id: str, weekday: str, triggered_by: str) -> date:
+        """Move the next day off to `weekday` for that one week only; the
+        standing day off is untouched. "This week" means the week of his
+        next day off, so if this week's has already passed it is next
+        week's that moves (never two days off in one week). Returns the
+        date he will be off."""
+        if priest_id not in self._order:
+            raise RotationError(f"priest id '{priest_id}' not found in active order")
+        if weekday not in VALID_WEEKDAYS:
+            raise RotationError(f"'{weekday}' is not a valid day of the week")
+        today = effective_ring_date()
+        week, _ = self.next_day_off(priest_id, today)
+        target = week + timedelta(days=WEEKDAY_ORDER.index(weekday))
+        if target < today:
+            raise RotationError(
+                f"{weekday} ({target:%m/%d}) has already passed this week. Pick a later day, or make it permanent."
+            )
+        self.set_week_day_off_override(week, priest_id, "move", weekday, triggered_by=triggered_by)
+        return target
+
+    def move_recollection_this_month(self, priest_id: str, ordinal: int, triggered_by: str) -> date:
+        """Move the next recollection to the `ordinal`'th Wednesday of
+        that month only; the standing ordinal is untouched. "This month"
+        is the month of his next recollection, so once this month's has
+        passed it is next month's that moves (never two in one month).
+        Returns the new date."""
+        if priest_id not in self._order:
+            raise RotationError(f"priest id '{priest_id}' not found in active order")
+        if not 1 <= ordinal <= 5:
+            raise RotationError("day of recollection ordinal must be between 1 and 5")
+        today = effective_ring_date()
+        upcoming = self.next_recollection(priest_id, today) or today
+        year, month = upcoming.year, upcoming.month
+        target = nth_weekday_of_month(year, month, WEDNESDAY_INDEX, ordinal)
+        month_name = calendar.month_name[month]
+        if target is None:
+            raise RotationError(f"{month_name} doesn't have a {ordinal}th Wednesday.")
+        if target < today:
+            raise RotationError(
+                f"The {ordinal}{_ordinal_suffix(ordinal)} Wednesday of {month_name} ({target:%m/%d}) has already "
+                "passed. Pick a later Wednesday, or make it permanent."
+            )
+        key = f"{year:04d}-{month:02d}"
+        moves = dict(self._recollection_month_overrides.get(key, {}))
+        previous = self._recollection_month_overrides.get(key)
+        moves[priest_id] = ordinal
+        self._recollection_month_overrides[key] = moves
+        try:
+            if not self._anyone_else_hard_available(priest_id, as_california_datetime(datetime(target.year, target.month, target.day, 12, 0))):
+                raise RotationError(f"Moving the recollection to {target:%m/%d} would leave no one on the line that day.")
+        except RotationError:
+            if previous is None:
+                self._recollection_month_overrides.pop(key, None)
+            else:
+                self._recollection_month_overrides[key] = previous
+            raise
+        # Moves for months already behind us are never read again.
+        this_month = f"{today.year:04d}-{today.month:02d}"
+        self._recollection_month_overrides = {
+            k: v for k, v in self._recollection_month_overrides.items() if k >= this_month
+        }
+        self._log(
+            "set_recollection_month_override",
+            triggered_by=triggered_by,
+            priest_id=priest_id,
+            month=key,
+            ordinal=ordinal,
+            on_date=target.isoformat(),
+        )
+        self._save()
+        return target
+
+    def _clear_future_moves(self, priest_id: str, kind: str) -> None:
+        """A permanent change replaces any pending one-time move of the
+        same kind (this week's or this month's and later), so the old move
+        can't quietly override the new standing setting. Skips stay."""
+        today = effective_ring_date()
+        if kind == "recollection":
+            this_month = f"{today.year:04d}-{today.month:02d}"
+            for key, moves in list(self._recollection_month_overrides.items()):
+                if key >= this_month and priest_id in moves:
+                    moves = {pid: n for pid, n in moves.items() if pid != priest_id}
+                    if moves:
+                        self._recollection_month_overrides[key] = moves
+                    else:
+                        del self._recollection_month_overrides[key]
+        else:
+            this_week = week_monday(today).isoformat()
+            for key, week in list(self._week_day_off_overrides.items()):
+                if key >= this_week and (week.get(priest_id) or {}).get("action") == "move":
+                    week = {pid: o for pid, o in week.items() if pid != priest_id}
+                    if week:
+                        self._week_day_off_overrides[key] = week
+                    else:
+                        del self._week_day_off_overrides[key]
+
+    def _pending_moves(self, priest_id: str, today: date) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+        """Upcoming one-time moves, for STATUS and the dashboard:
+        ({"when", "weekday"} | None, {"when", "ordinal"} | None)."""
+        day_move = None
+        for key in sorted(self._week_day_off_overrides):
+            override = self._week_day_off_overrides[key].get(priest_id) or {}
+            if override.get("action") == "move":
+                day = date.fromisoformat(key) + timedelta(days=WEEKDAY_ORDER.index(override["weekday"]))
+                if day >= today:
+                    day_move = {"when": day.isoformat(), "weekday": override["weekday"]}
+                    break
+        rec_move = None
+        for key in sorted(self._recollection_month_overrides):
+            ordinal = self._recollection_month_overrides[key].get(priest_id)
+            if ordinal:
+                year, month = int(key[:4]), int(key[5:7])
+                day = nth_weekday_of_month(year, month, WEDNESDAY_INDEX, ordinal)
+                if day and day >= today:
+                    rec_move = {"when": day.isoformat(), "ordinal": ordinal}
+                    break
+        return day_move, rec_move
+
     def scheduled_skip_targets(self, priest_id: str, after: date | None = None) -> list[dict[str, Any]]:
         """Next skippable day-off and recollection occurrences."""
         after = after or effective_ring_date()
-        avail = self._get_availability(priest_id)
         items: list[dict[str, Any]] = []
 
-        day_off = avail.get("day_off")
-        if day_off:
-            candidate = next_weekday_on_or_after(day_off, after)
-            for _ in range(8):
-                week = week_monday(candidate)
-                override = self._week_day_off_overrides.get(week.isoformat(), {}).get(priest_id)
-                if not (override and override.get("action") == "skip"):
-                    items.append(
-                        {
-                            "kind": "day_off",
-                            "weekday": day_off,
-                            "when": candidate.isoformat(),
-                            "week_start": week.isoformat(),
-                            "label": f"Day off every {day_off} (next {candidate.strftime('%m/%d')})",
-                        }
-                    )
-                    break
-                candidate = candidate + timedelta(days=7)
+        week, day = self.next_day_off(priest_id, after)
+        if day is not None:
+            weekday = day.strftime("%A")
+            moved = (self._week_day_off_overrides.get(week.isoformat(), {}).get(priest_id) or {}).get("action") == "move"
+            items.append(
+                {
+                    "kind": "day_off",
+                    "weekday": weekday,
+                    "when": day.isoformat(),
+                    "week_start": week.isoformat(),
+                    "label": (
+                        f"Day off {weekday} (moved this week only, {day.strftime('%m/%d')})"
+                        if moved
+                        else f"Day off every {weekday} (next {day.strftime('%m/%d')})"
+                    ),
+                }
+            )
 
-        recollection = avail.get("day_of_recollection") or {}
-        ordinal = recollection.get("ordinal")
-        if ordinal:
-            candidate = next_recollection_date(int(ordinal), after)
-            for _ in range(6):
-                if not self._is_recollection_skipped(priest_id, candidate):
-                    suffix = {1: "st", 2: "nd", 3: "rd"}.get(int(ordinal), "th")
-                    items.append(
-                        {
-                            "kind": "recollection",
-                            "ordinal": int(ordinal),
-                            "when": candidate.isoformat(),
-                            "label": (
-                                f"Recollection: {ordinal}{suffix} Wednesday "
-                                f"(next {candidate.strftime('%m/%d')})"
-                            ),
-                        }
-                    )
-                    break
-                candidate = next_recollection_date(int(ordinal), candidate + timedelta(days=1))
+        candidate = self.next_recollection(priest_id, after)
+        if candidate:
+            ordinal = (candidate.day - 1) // 7 + 1
+            moved = candidate.strftime("%Y-%m") in self._recollection_month_overrides and priest_id in self._recollection_month_overrides[candidate.strftime("%Y-%m")]
+            items.append(
+                {
+                    "kind": "recollection",
+                    "ordinal": ordinal,
+                    "when": candidate.isoformat(),
+                    "label": (
+                        f"Recollection: {ordinal}{_ordinal_suffix(ordinal)} Wednesday "
+                        f"({'moved this month only, ' if moved else 'next '}{candidate.strftime('%m/%d')})"
+                    ),
+                }
+            )
         return items
 
     def skip_scheduled_absence(
@@ -1047,6 +1238,7 @@ class RotationManager:
         if weekday is not None and effective_ring_date(california_now()).strftime("%A") == weekday:
             self._validate_would_keep_coverage(priest_id, new_avail)
         self._availability[priest_id] = new_avail
+        self._clear_future_moves(priest_id, "day_off")
         self._log("set_day_off", triggered_by=triggered_by, reason=reason, priest_id=priest_id, day_off=weekday)
         self._save()
 
@@ -1153,9 +1345,10 @@ class RotationManager:
 
         recollection = {"ordinal": ordinal} if ordinal is not None else None
         new_avail = {**self._get_availability(priest_id), "day_of_recollection": recollection}
-        if recollection and RotationManager._is_recollection_active(new_avail, california_now()):
+        if recollection and self._is_recollection_active(new_avail, california_now(), priest_id):
             self._validate_would_keep_coverage(priest_id, new_avail)
         self._availability[priest_id] = new_avail
+        self._clear_future_moves(priest_id, "recollection")
         self._log(
             "set_day_of_recollection", triggered_by=triggered_by, reason=reason, priest_id=priest_id, ordinal=ordinal
         )
@@ -1354,6 +1547,7 @@ class RotationManager:
             # The soonest trip, for readers that show just one.
             record["vacation"] = upcoming[0] if upcoming else None
             record["day_of_recollection"] = avail.get("day_of_recollection")
+            record["day_off_move"], record["recollection_move"] = self._pending_moves(pid, today)
             record["notifications_muted"] = avail.get("notifications_muted", False)
             # Added through the bot and not yet seen on RingCentral: the
             # driver may create his ring leg, and the 8 PM check must not

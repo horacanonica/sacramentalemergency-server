@@ -37,6 +37,7 @@ from app.localtime import (
     california_today,
     effective_ring_date,
     format_california,
+    week_monday,
 )
 from app.notifier import Notifier
 from app import call_log, doctor, troubleshoot
@@ -67,6 +68,7 @@ HELP_TEXT = (
     "SETTINGS - availability, set the order, add, remove or restore a priest, audit log\n"
     "TROUBLESHOOT - something's wrong? Checks and fixes common problems, or sends a report\n"
     "CALLS - calls to the line in the last 24 hours (CALLS 30 = last 30 days, CALLS REPORT = statistics)\n"
+    "HISTORY - the last 3 calls to the line in the past 24 hours, with date, time and number\n"
     "ABOUT - a full explanation of how this all works\n"
     "HELP - show this message\n"
     "CANCEL - leave any menu without saving"
@@ -212,7 +214,11 @@ def _format_status(order: list[dict], automation_enabled: bool = True) -> str:
     lines.append("")
     lines.append("Day off:")
     for p in order:
-        lines.append(f"{p['name']}: {p.get('day_off') or 'none'}")
+        line = f"{p['name']}: {p.get('day_off') or 'none'}"
+        move = p.get("day_off_move")
+        if move:
+            line += f" (this week only: {move['weekday']} {_mmdd(move['when'])})"
+        lines.append(line)
 
     lines.append("")
     lines.append("Vacation/Away:")
@@ -229,9 +235,13 @@ def _format_status(order: list[dict], automation_enabled: bool = True) -> str:
     for p in order:
         rec = p.get("day_of_recollection")
         if rec and rec.get("ordinal"):
-            lines.append(f"{p['name']}: {_ordinal_word(rec['ordinal'])} Wed")
+            line = f"{p['name']}: {_ordinal_word(rec['ordinal'])} Wed"
         else:
-            lines.append(f"{p['name']}: none")
+            line = f"{p['name']}: none"
+        move = p.get("recollection_move")
+        if move:
+            line += f" (this month only: {_ordinal_word(move['ordinal'])} Wed, {_mmdd(move['when'])})"
+        lines.append(line)
 
     disabled = [p["name"] for p in order if p.get("manual_disabled")]
     if disabled:
@@ -458,7 +468,9 @@ def _poll_once(
                 "menu_availability",
                 "menu_skip_which",
                 "menu_day_off",
+                "menu_day_off_scope",
                 "menu_recollection",
+                "menu_recollection_scope",
                 "menu_vacation",
                 "menu_vacation_more",
                 "menu_settings",
@@ -470,10 +482,15 @@ def _poll_once(
                 "menu_restore_priest",
                 "menu_restore_priest_confirm",
                 "menu_set_order",
+                "menu_finished",
             ):
+                changes_before = rotation.change_count
                 _handle_menu_pending(text, priest, pending, ptype, signal_client, rotation, rc_driver, notifier)
+                _ask_if_finished(priest, pending, ptype, changes_before, signal_client, rotation)
             elif ptype == "menu_set_order_confirm":
+                changes_before = rotation.change_count
                 _handle_set_order_confirm(text, priest, pending, rotation, rc_driver, notifier)
+                _ask_if_finished(priest, pending, ptype, changes_before, signal_client, rotation)
             else:
                 # Unknown pending type shouldn't happen, but don't leave the
                 # priest stuck unable to use the bot for anything else.
@@ -512,6 +529,8 @@ def _poll_once(
             signal_client.send([priest["cell_number"]], SETTINGS_MENU_TEXT)
         elif command == "CALLS" or command.startswith("CALLS "):
             _handle_calls(command, priest, rotation, signal_client)
+        elif command == "HISTORY":
+            signal_client.send([priest["cell_number"]], call_log.history_text(rotation.state_path.parent))
         elif command in ("TROUBLESHOOT", "TROUBLE", "HELP ME", "FIX"):
             troubleshoot.start(rotation, priest, _troubleshoot_tools(rotation, signal_client, rc_driver, notifier))
         elif command == "EXECUTE ORDER 66":
@@ -640,8 +659,12 @@ def _handle_menu_pending(
         _handle_menu_skip_which(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_day_off":
         _handle_menu_day_off(text, priest, pending, signal_client, rotation)
+    elif ptype == "menu_day_off_scope":
+        _handle_menu_day_off_scope(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_recollection":
         _handle_menu_recollection(text, priest, pending, signal_client, rotation)
+    elif ptype == "menu_recollection_scope":
+        _handle_menu_recollection_scope(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_vacation":
         _handle_menu_vacation(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_vacation_more":
@@ -664,6 +687,92 @@ def _handle_menu_pending(
         _handle_menu_restore_priest_confirm(text, priest, pending, signal_client, rotation, rc_driver, notifier)
     elif ptype == "menu_set_order":
         _handle_menu_set_order(text, priest, signal_client, rotation)
+    elif ptype == "menu_finished":
+        _handle_menu_finished(text, priest, pending, signal_client, rotation)
+
+
+_AVAILABILITY_MENU_TYPES = frozenset(
+    {
+        "menu_availability",
+        "menu_skip_which",
+        "menu_day_off",
+        "menu_day_off_scope",
+        "menu_recollection",
+        "menu_recollection_scope",
+        "menu_vacation",
+        "menu_vacation_more",
+    }
+)
+_SETTINGS_MENU_TYPES = frozenset(
+    {
+        "menu_add_priest_name",
+        "menu_add_priest_cell",
+        "menu_add_priest_confirm",
+        "menu_remove_priest",
+        "menu_remove_priest_confirm",
+        "menu_restore_priest",
+        "menu_restore_priest_confirm",
+        "menu_set_order",
+        "menu_set_order_confirm",
+    }
+)
+
+
+def _ask_if_finished(
+    priest: dict, pending: dict, ptype: str, changes_before: int, signal_client: SignalClient,
+    rotation: RotationManager,
+) -> None:
+    """After a Settings / Availability reply that saved something and ended
+    the conversation, ask "Finished with ...? Y/N" instead of dropping the
+    priest out of the menu. N goes back to that menu. (Nothing is asked
+    after a cancel, an error, or a plain "view".) Finishing a trip list
+    (N to "Add another trip?") counts: the trips were saved earlier."""
+    if ptype == "menu_finished" or rotation.pending_confirmation(priest["id"]) is not None:
+        return
+    saved = rotation.change_count != changes_before or ptype == "menu_vacation_more"
+    if not saved:
+        return
+    if ptype in _AVAILABILITY_MENU_TYPES and pending.get("target_priest_id"):
+        target_id, target_name = pending["target_priest_id"], pending["target_priest_name"]
+        rotation.set_pending_confirmation(
+            priest["id"],
+            {"type": "menu_finished", "branch": "availability",
+             "target_priest_id": target_id, "target_priest_name": target_name},
+        )
+        who = "availability" if target_id == priest["id"] else f"{target_name}'s availability"
+        signal_client.send([priest["cell_number"]], f"Finished with {who}? Y/N")
+    elif ptype in _SETTINGS_MENU_TYPES:
+        rotation.set_pending_confirmation(priest["id"], {"type": "menu_finished", "branch": "settings"})
+        signal_client.send([priest["cell_number"]], "Finished with Settings? Y/N")
+
+
+def _handle_menu_finished(
+    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    reply = text.strip().upper()
+    cell = [priest["cell_number"]]
+    branch = pending.get("branch")
+    if reply in ("Y", "YES", "DONE", "FINISHED"):
+        rotation.pop_pending_confirmation(priest["id"])
+        signal_client.send(cell, "Okay, all done. Text SETTINGS any time to make more changes.")
+        return
+    if reply in ("N", "NO"):
+        if branch == "availability":
+            target_id, target_name = pending["target_priest_id"], pending["target_priest_name"]
+            rotation.set_pending_confirmation(
+                priest["id"],
+                {"type": "menu_availability", "target_priest_id": target_id, "target_priest_name": target_name},
+            )
+            signal_client.send(cell, _availability_screen(rotation, priest["id"], target_id, target_name))
+        else:
+            rotation.set_pending_confirmation(priest["id"], {"type": "menu_settings"})
+            signal_client.send(cell, SETTINGS_MENU_TEXT)
+        return
+    if reply == "SETTINGS":
+        rotation.set_pending_confirmation(priest["id"], {"type": "menu_settings"})
+        signal_client.send(cell, SETTINGS_MENU_TEXT)
+        return
+    signal_client.send(cell, "Reply Y if you're finished, or N to make another change.")
 
 
 def _trip_span(trip: dict) -> str:
@@ -758,7 +867,7 @@ def _apply_skip_absence(
             priest,
             target_id,
             target_name,
-            f"{priest['name']} skipped your {item['label'].split(' (next')[0].lower()} — you'll stay on the line that day.",
+            f"{priest['name']} skipped your {item['label'].split(' (')[0].lower()} — you'll stay on the line that day.",
         )
 
 
@@ -906,16 +1015,109 @@ def _handle_menu_day_off(
         )
         return
 
+    current = rotation.standing_day_off(target_id)
+    if current and current != parsed:
+        # Changing an existing day off: just this week, or for good?
+        week, _ = rotation.next_day_off(target_id)
+        when = "this week" if week <= week_monday(california_today()) else "next week"
+        rotation.set_pending_confirmation(
+            priest["id"],
+            {"type": "menu_day_off_scope", "target_priest_id": target_id,
+             "target_priest_name": target_name, "weekday": parsed},
+        )
+        poss = _possessive(target_id, priest["id"], target_name)
+        signal_client.send(
+            [priest["cell_number"]],
+            f"What would you like to do with {poss} {current} day off?\n"
+            f"1. Skip {when}'s day off (stay on the line; {current} comes back after)\n"
+            f"2. Move just {when} to {parsed}\n"
+            f"3. Move permanently to {parsed}\n"
+            "Reply 1, 2 or 3, or CANCEL.",
+        )
+        return
+    _set_day_off_permanently(priest, target_id, target_name, parsed, signal_client, rotation)
+
+
+def _set_day_off_permanently(
+    priest: dict, target_id: str, target_name: str, weekday: str, signal_client: SignalClient,
+    rotation: RotationManager, suffix: str = "",
+) -> bool:
     try:
-        rotation.set_day_off(target_id, parsed, triggered_by=f"signal:{priest['name']}", reason="set via menu")
+        rotation.set_day_off(target_id, weekday, triggered_by=f"signal:{priest['name']}", reason="set via menu")
     except RotationError as exc:
         signal_client.send([priest["cell_number"]], f"Couldn't set that: {exc}")
+        return False
+    rotation.pop_pending_confirmation(priest["id"])
+    poss = _possessive(target_id, priest["id"], target_name, capitalize=True)
+    signal_client.send([priest["cell_number"]], f"{poss} day off is now set to {weekday}{suffix}.")
+    _notify_target_if_different(
+        signal_client, rotation, priest, target_id, target_name,
+        f"{priest['name']} set your day off to {weekday}{suffix}.",
+    )
+    return True
+
+
+_SCOPE_SKIP_RE = re.compile(r"^(?:1|SKIP\b.*|STAY\b.*)$")
+_SCOPE_ONCE_RE = re.compile(r"^(?:2|(?:MOVE )?(?:JUST |ONLY )?(?:THIS |NEXT )?(?:WEEK|MONTH)(?: ONLY)?)$")
+_SCOPE_PERMANENT_RE = re.compile(r"^(?:3|(?:MOVE )?PERM\w*|ALWAYS|FOREVER|FOR GOOD)$")
+_SCOPE_REPLY_HELP = "Reply 1 (skip), 2 (move just once) or 3 (move permanently), or CANCEL."
+
+
+def _parse_scope(text: str) -> str | None:
+    """'skip', 'once' (this week / this month only), 'permanent', or None."""
+    reply = text.strip().upper()
+    for scope, pattern in (("skip", _SCOPE_SKIP_RE), ("once", _SCOPE_ONCE_RE), ("permanent", _SCOPE_PERMANENT_RE)):
+        if pattern.match(reply):
+            return scope
+    return None
+
+
+def _skip_next(
+    kind: str, priest: dict, target_id: str, target_name: str, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    """Scope 'skip': stay on the line for the next day off / recollection;
+    the standing setting is untouched."""
+    item = next((t for t in rotation.scheduled_skip_targets(target_id) if t["kind"] == kind), None)
+    if item is None:
+        rotation.pop_pending_confirmation(priest["id"])
+        signal_client.send([priest["cell_number"]], "There isn't one coming up to skip.")
+        return
+    _apply_skip_absence(priest, target_id, target_name, item, signal_client, rotation)
+
+
+def _handle_menu_day_off_scope(
+    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    target_id, target_name, weekday = pending["target_priest_id"], pending["target_priest_name"], pending["weekday"]
+    cell = [priest["cell_number"]]
+    scope = _parse_scope(text)
+    if scope is None:
+        signal_client.send(cell, _SCOPE_REPLY_HELP)
+        return
+    if scope == "skip":
+        _skip_next("day_off", priest, target_id, target_name, signal_client, rotation)
+        return
+    if scope == "permanent":
+        _set_day_off_permanently(priest, target_id, target_name, weekday, signal_client, rotation, ", permanently")
+        return
+    before = rotation.standing_day_off(target_id)
+    try:
+        day = rotation.move_day_off_this_week(target_id, weekday, triggered_by=f"signal:{priest['name']}")
+    except RotationError as exc:
+        # Stay in the day-off question so a different day can be sent.
+        rotation.set_pending_confirmation(
+            priest["id"], {"type": "menu_day_off", "target_priest_id": target_id, "target_priest_name": target_name}
+        )
+        signal_client.send(cell, f"Couldn't set that: {exc} Reply with another day, or CANCEL.")
         return
     rotation.pop_pending_confirmation(priest["id"])
     poss = _possessive(target_id, priest["id"], target_name, capitalize=True)
-    signal_client.send([priest["cell_number"]], f"{poss} day off is now set to {parsed}.")
+    signal_client.send(
+        cell, f"Okay, {poss} day off that week is moved to {weekday} {day:%m/%d} only. It goes back to {before} after that."
+    )
     _notify_target_if_different(
-        signal_client, rotation, priest, target_id, target_name, f"{priest['name']} set your day off to {parsed}."
+        signal_client, rotation, priest, target_id, target_name,
+        f"{priest['name']} moved your day off to {weekday} {day:%m/%d} for that week only (back to {before} after).",
     )
 
 
@@ -949,20 +1151,48 @@ def _handle_menu_recollection(
         return
 
     ordinal = int(stripped)
+    current = rotation.standing_recollection(target_id)
+    if current and current != ordinal:
+        # Changing an existing recollection: just this month, or for good?
+        upcoming = rotation.next_recollection(target_id)
+        month = upcoming.strftime("%B") if upcoming else california_today().strftime("%B")
+        when = "this month" if upcoming is None or upcoming.month == california_today().month else "next month"
+        rotation.set_pending_confirmation(
+            priest["id"],
+            {"type": "menu_recollection_scope", "target_priest_id": target_id,
+             "target_priest_name": target_name, "ordinal": ordinal},
+        )
+        poss = _possessive(target_id, priest["id"], target_name)
+        signal_client.send(
+            [priest["cell_number"]],
+            f"What would you like to do with {poss} {_ordinal_word(current)} Wednesday day of recollection?\n"
+            f"1. Skip {when}'s recollection ({month}; stay on the line, the {_ordinal_word(current)} Wednesday comes back after)\n"
+            f"2. Move just {when} to the {_ordinal_word(ordinal)} Wednesday\n"
+            f"3. Move permanently to the {_ordinal_word(ordinal)} Wednesday\n"
+            "Reply 1, 2 or 3, or CANCEL.",
+        )
+        return
+    _set_recollection_permanently(priest, target_id, target_name, ordinal, signal_client, rotation)
+
+
+def _set_recollection_permanently(
+    priest: dict, target_id: str, target_name: str, ordinal: int, signal_client: SignalClient,
+    rotation: RotationManager, suffix: str = "",
+) -> bool:
     try:
         rotation.set_day_of_recollection(
             target_id, ordinal, triggered_by=f"signal:{priest['name']}", reason="set via menu"
         )
     except RotationError as exc:
         signal_client.send([priest["cell_number"]], f"Couldn't set that: {exc}")
-        return
+        return False
     rotation.pop_pending_confirmation(priest["id"])
-    next_date = next_recollection_date(ordinal, california_today())
+    next_date = rotation.next_recollection(target_id) or next_recollection_date(ordinal, california_today())
     poss = _possessive(target_id, priest["id"], target_name)
     signal_client.send(
         [priest["cell_number"]],
         f"Okay, {poss} next day of recollection will be {next_date.strftime('%m/%d')}, "
-        f"which is the {_ordinal_word(ordinal)} Wednesday of the month. "
+        f"which is the {_ordinal_word(ordinal)} Wednesday of the month{suffix}. "
         f"It starts at 8:00 PM the evening before and ends at 8:00 PM that day.",
     )
     _notify_target_if_different(
@@ -971,8 +1201,50 @@ def _handle_menu_recollection(
         priest,
         target_id,
         target_name,
-        f"{priest['name']} set your day of recollection to the {_ordinal_word(ordinal)} Wednesday "
-        f"(next: {next_date.strftime('%m/%d')}, 8pm the evening before through 8pm that day).",
+        f"{priest['name']} set your day of recollection to the {_ordinal_word(ordinal)} Wednesday"
+        f"{' permanently' if suffix else ''} (next: {next_date.strftime('%m/%d')}, 8pm the evening before through 8pm that day).",
+    )
+    return True
+
+
+def _handle_menu_recollection_scope(
+    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    target_id, target_name, ordinal = pending["target_priest_id"], pending["target_priest_name"], pending["ordinal"]
+    cell = [priest["cell_number"]]
+    scope = _parse_scope(text)
+    if scope is None:
+        signal_client.send(cell, _SCOPE_REPLY_HELP)
+        return
+    if scope == "skip":
+        _skip_next("recollection", priest, target_id, target_name, signal_client, rotation)
+        return
+    if scope == "permanent":
+        _set_recollection_permanently(priest, target_id, target_name, ordinal, signal_client, rotation, ", permanently")
+        return
+    before = rotation.standing_recollection(target_id)
+    try:
+        day = rotation.move_recollection_this_month(target_id, ordinal, triggered_by=f"signal:{priest['name']}")
+    except RotationError as exc:
+        # Stay in the recollection question so a different Wednesday can be sent.
+        rotation.set_pending_confirmation(
+            priest["id"],
+            {"type": "menu_recollection", "target_priest_id": target_id, "target_priest_name": target_name},
+        )
+        signal_client.send(cell, f"Couldn't set that: {exc} Reply with another number (1-5), or CANCEL.")
+        return
+    rotation.pop_pending_confirmation(priest["id"])
+    poss = _possessive(target_id, priest["id"], target_name)
+    signal_client.send(
+        cell,
+        f"Okay, {poss} day of recollection for {day:%B} is moved to {day:%m/%d} (the {_ordinal_word(ordinal)} "
+        f"Wednesday) only. It goes back to the {_ordinal_word(before)} Wednesday after that. "
+        "It starts at 8:00 PM the evening before and ends at 8:00 PM that day.",
+    )
+    _notify_target_if_different(
+        signal_client, rotation, priest, target_id, target_name,
+        f"{priest['name']} moved your day of recollection for {day:%B} to {day:%m/%d} only "
+        f"(back to the {_ordinal_word(before)} Wednesday after).",
     )
 
 

@@ -44,10 +44,12 @@
               {% elif p.day_off %}day off today
               {% endif %}
             </span>
-          {% elif p.day_off or p.vacation or p.day_of_recollection %}
+          {% elif p.day_off or p.vacation or p.day_of_recollection or p.day_off_move or p.recollection_move %}
             <span class="badge scheduled">
               {% if p.day_off %}day off: {{ p.day_off }}{% endif %}
               {% if p.day_of_recollection %} · recollection: {{ p.day_of_recollection.ordinal }}{% if p.day_of_recollection.ordinal == 1 %}st{% elif p.day_of_recollection.ordinal == 2 %}nd{% elif p.day_of_recollection.ordinal == 3 %}rd{% else %}th{% endif %} Wed{% endif %}
+              {% if p.day_off_move %} · this week only: day off {{ p.day_off_move.weekday }} {{ p.day_off_move.when }}{% endif %}
+              {% if p.recollection_move %} · this month only: recollection {{ p.recollection_move.when }}{% endif %}
               {% for v in p.vacations %} · vacation {{ v.start }}–{{ v.end }}{% endfor %}
             </span>
           {% endif %}
@@ -85,6 +87,11 @@
               <option value="{{ day }}" {% if p.day_off == day %}selected{% endif %}>{{ day }}</option>
             {% endfor %}
           </select>
+          <select name="scope" title="Whether this changes the regular day off or only the next one">
+            <option value="permanent">Move permanently</option>
+            <option value="once">Move just this week</option>
+            <option value="skip">Skip this week's day off (ignores the day chosen)</option>
+          </select>
           <button type="submit">Set day off</button>
         </form>
 
@@ -94,6 +101,11 @@
             {% for n in [1, 2, 3, 4, 5] %}
               <option value="{{ n }}" {% if p.day_of_recollection and p.day_of_recollection.ordinal == n %}selected{% endif %}>{{ n }}{% if n == 1 %}st{% elif n == 2 %}nd{% elif n == 3 %}rd{% else %}th{% endif %} Wednesday</option>
             {% endfor %}
+          </select>
+          <select name="scope" title="Whether this changes the regular recollection or only the next one">
+            <option value="permanent">Move permanently</option>
+            <option value="once">Move just this month</option>
+            <option value="skip">Skip this month's recollection (ignores the number chosen)</option>
           </select>
           <button type="submit">Set recollection</button>
         </form>
