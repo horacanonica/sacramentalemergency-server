@@ -364,6 +364,90 @@ SETTINGS
 
 ---
 
+## Menu tree: every Signal command (one page)
+
+Everything a priest can text, with Y/N answers shown as their own branches. (The dashboard is switched off, so Signal is the only control surface.)
+
+```
+ANY TIME (no menu open)
+├─ ROTATE            moves #1 to the back; clears a today-only order; texts everyone
+├─ STATUS            live ring, then day off (skipped days marked), vacation, recollection
+├─ DISABLE / ENABLE  global automatic day-off/vacation/recollection switching off / on
+├─ CALLS             last 3 calls (24 h)
+│   ├─ CALLS ALL        every call in 24 h
+│   ├─ CALLS <days>     e.g. CALLS 30
+│   └─ CALLS REPORT     statistics file
+├─ ABOUT / HELP      explanation / short command list
+├─ TROUBLESHOOT      (also TROUBLE, HELP ME, FIX)  -> see TROUBLESHOOT below
+├─ SETTINGS          -> see SETTINGS below
+└─ (hidden: HISTORY = CALLS, EXECUTE ORDER 66)
+
+INSIDE ANY OPEN MENU:  CANCEL (or STOP) = leave, nothing saved   |   HELP = command list, menu stays open
+                       5 minutes of silence = "Cancelled"
+
+SETTINGS
+├─ 1 Add priest -> [name] -> [cell number] -> "is this correct?"
+│       ├─ Y   adds him (and his RingCentral leg)
+│       └─ N   back to "Enter name"
+├─ 2 Remove priest -> [number] -> deletion warning
+│       ├─ Y   deletes him from the roster and from RingCentral
+│       └─ N   back to the priest list
+├─ 3 Restore recently deleted -> [number] -> "Restore <name>?"
+│       ├─ Y   restores him
+│       └─ N   Cancelled
+├─ 4 View audit log
+├─ 5 Availability -> [ME or a priest's name] -> AVAILABILITY (below)
+└─ 6 Set order -> shows saved order (+ live ring with the same numbers if a rule changes it)
+        └─ [new order: numbers "3 1 2" or names]   (must list everyone once)
+              ├─ 1  Today only (live ring changes, back to saved order at 8 PM)
+              ├─ 2  Permanent (saved order, until the next ROTATE)
+              ├─ N  Cancelled, order unchanged
+              └─ Y  (not accepted: asks "Reply 1 or 2")
+
+AVAILABILITY  (screen lists: automatic time off, skipped days, trips)
+├─ 1 / 2 / SKIP     stay on the line for the next listed day off / recollection
+│                     (SKIP asks "which?" if two are listed; then reply 1 or 2)
+├─ UNSKIP           put a skipped day back (only shown if something is skipped)
+│                     (asks "which?" if several; reply the number)
+├─ DAY OFF -> [weekday | NONE | CLEAR]
+│       └─ if he already had one: 1 skip next one / 2 move just this week / 3 move permanently
+├─ RECOLLECTION -> [1-5 (Wednesday of month) | NONE | CLEAR]
+│       └─ if he already had one: 1 skip this month / 2 move just this month / 3 move permanently
+└─ VACATION or AWAY -> lists trips
+        ├─ [MM/DD-MM/DD]   adds a trip -> "Add another trip?"
+        │       ├─ Y (or type the next dates)   back to trips
+        │       └─ N (or DONE)                  "Done. Trips on file ..."
+        └─ REMOVE <n>      cancels trip n
+
+AFTER ANY SAVED CHANGE in Settings/Availability:  "Finished with Settings? / availability?"
+├─ Y  (or YES, DONE, FINISHED)   all done
+├─ N  (or NO)                    back to that menu (same priest for Availability)
+└─ SETTINGS                      jump to the Settings menu
+
+TROUBLESHOOT -> 1-6 (or CANCEL)
+├─ 1 Calls ringing the wrong priest -> 1 bot is right (re-send to RingCentral) / 2 RingCentral is right (bot adopts it)
+├─ 2 Bot slow or not answering      -> 1 clear stuck menus / 2 restart the bot
+├─ 3 "switching is DISABLED" text   -> Y turn automatic switching back on   (anything else: asks again)
+├─ 4 A priest can't use the bot     -> [his name or cell number]
+├─ 5 Full report (file to give to an AI or the admin)
+└─ 6 None of these / still broken
+
+TEXTS THE BOT SENDS FIRST (you reply)
+├─ Vacation cover prompt (two days before a priest is away; also 3 PM Sunday if it continues)
+│     ├─ SKIP      stay on the line that week
+│     ├─ [weekday] move your day off, that week only
+│     └─ no reply for 24 h = day offs skipped until he returns
+├─ Day-off check ("KEEP or a weekday")
+│     ├─ KEEP
+│     └─ [weekday]
+├─ Signal update offer:  Y = install / N = not now
+└─ Welcome setup for a new priest (1 hour limit)
+      day off [weekday | SKIP] -> recollection [1-5 | SKIP] -> vacation [MM/DD-MM/DD | SKIP]
+      SKIP ALL at any point ends the setup
+```
+
+---
+
 ## Automatic actions: when they fire, when they do not
 
 All times are California. The scheduler checks about once a minute. The Signal bot checks about every 3 seconds and also reapplies the live ring if it drifted.
