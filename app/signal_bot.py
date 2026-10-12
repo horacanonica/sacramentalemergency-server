@@ -469,6 +469,7 @@ def _poll_once(
                 "menu_who",
                 "menu_availability",
                 "menu_skip_which",
+                "menu_unskip_which",
                 "menu_day_off",
                 "menu_day_off_scope",
                 "menu_recollection",
@@ -659,6 +660,8 @@ def _handle_menu_pending(
         _handle_menu_availability(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_skip_which":
         _handle_menu_skip_which(text, priest, pending, signal_client, rotation)
+    elif ptype == "menu_unskip_which":
+        _handle_menu_unskip_which(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_day_off":
         _handle_menu_day_off(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_day_off_scope":
@@ -697,6 +700,7 @@ _AVAILABILITY_MENU_TYPES = frozenset(
     {
         "menu_availability",
         "menu_skip_which",
+        "menu_unskip_which",
         "menu_day_off",
         "menu_day_off_scope",
         "menu_recollection",
@@ -825,6 +829,9 @@ def _availability_screen(
             lines.append(f"{i}. {item['label']}")
     else:
         lines.append("None set.")
+    skipped = rotation.skipped_targets(target_id)
+    if skipped:
+        lines.append("Skipped (staying on the line): " + "; ".join(i["label"] for i in skipped))
     record = next((p for p in rotation.current_order() if p["id"] == target_id), None)
     vacation_line = _vacation_line(record) if record else None
     if vacation_line:
@@ -837,6 +844,8 @@ def _availability_screen(
             lines.append("SKIP - stay on the line for the day listed above")
         else:
             lines.append("SKIP - stay on the line for one numbered day above (or reply 1/2)")
+    if skipped:
+        lines.append("UNSKIP - put a skipped day back (it applies again)")
     lines.append("Reply with one of these, or HELP.")
     return "\n".join(lines)
 
@@ -871,6 +880,49 @@ def _apply_skip_absence(
             target_name,
             f"{priest['name']} skipped your {item['label'].split(' (')[0].lower()} — you'll stay on the line that day.",
         )
+
+
+def _apply_unskip_absence(
+    priest: dict,
+    target_id: str,
+    target_name: str,
+    item: dict,
+    signal_client: SignalClient,
+    rotation: RotationManager,
+) -> None:
+    try:
+        rotation.unskip_scheduled_absence(target_id, item, triggered_by=f"signal:{priest['name']}")
+    except RotationError as exc:
+        rotation.pop_pending_confirmation(priest["id"])
+        signal_client.send([priest["cell_number"]], str(exc))
+        return
+    rotation.pop_pending_confirmation(priest["id"])
+    when = date.fromisoformat(item["when"]).strftime("%m/%d")
+    what = f"{item['weekday']} {when} day off" if item["kind"] == "day_off" else f"Wednesday {when} recollection"
+    if target_id == priest["id"]:
+        signal_client.send([priest["cell_number"]], f"Your {what} is back on (no longer skipped).")
+    else:
+        signal_client.send([priest["cell_number"]], f"{target_name}: the {what} is back on (no longer skipped).")
+        _notify_target_if_different(
+            signal_client, rotation, priest, target_id, target_name,
+            f"{priest['name']} un-skipped your {what}: it applies again.",
+        )
+
+
+def _handle_menu_unskip_which(
+    text: str, priest: dict, pending: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    skipped = rotation.skipped_targets(pending["target_priest_id"])
+    reply = text.strip()
+    if not reply.isdigit() or not skipped or not (1 <= int(reply) <= len(skipped)):
+        lines = ["Reply with the number of the day to put back."]
+        lines += [f"{i}. {item['label']}" for i, item in enumerate(skipped, start=1)]
+        signal_client.send([priest["cell_number"]], "\n".join(lines))
+        return
+    _apply_unskip_absence(
+        priest, pending["target_priest_id"], pending["target_priest_name"],
+        skipped[int(reply) - 1], signal_client, rotation,
+    )
 
 
 def _handle_menu_who(text: str, priest: dict, signal_client: SignalClient, rotation: RotationManager) -> None:
@@ -932,6 +984,22 @@ def _handle_menu_availability(
             lines = ["Which one will you stay on for?"]
         for i, item in enumerate(targets, start=1):
             lines.append(f"{i}. {item['label']}")
+        lines.append("Reply with the number.")
+        signal_client.send([priest["cell_number"]], "\n".join(lines))
+        return
+    if choice == "UNSKIP":
+        skipped = rotation.skipped_targets(carry["target_priest_id"])
+        if not skipped:
+            signal_client.send([priest["cell_number"]], "There isn't a skipped day to put back.")
+            return
+        if len(skipped) == 1:
+            _apply_unskip_absence(
+                priest, carry["target_priest_id"], carry["target_priest_name"], skipped[0], signal_client, rotation
+            )
+            return
+        rotation.set_pending_confirmation(priest["id"], {"type": "menu_unskip_which", **carry})
+        lines = ["Which skipped day should be put back?"]
+        lines += [f"{i}. {item['label']}" for i, item in enumerate(skipped, start=1)]
         lines.append("Reply with the number.")
         signal_client.send([priest["cell_number"]], "\n".join(lines))
         return

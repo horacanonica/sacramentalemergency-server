@@ -1166,6 +1166,67 @@ class RotationManager:
             raise RotationError(f"unknown skip kind '{kind}'")
         return item
 
+    def skipped_targets(self, priest_id: str, after: date | None = None) -> list[dict[str, Any]]:
+        """Upcoming day offs / recollections he has skipped (what
+        unskip_scheduled_absence can put back), soonest first."""
+        after = after or effective_ring_date()
+        items: list[dict[str, Any]] = []
+        standing = self._get_availability(priest_id).get("day_off")
+        if standing:
+            for key in sorted(self._week_day_off_overrides):
+                if (self._week_day_off_overrides[key].get(priest_id) or {}).get("action") != "skip":
+                    continue
+                day = date.fromisoformat(key) + timedelta(days=WEEKDAY_ORDER.index(standing))
+                if day >= after:
+                    items.append(
+                        {
+                            "kind": "day_off",
+                            "week_start": key,
+                            "weekday": standing,
+                            "when": day.isoformat(),
+                            "label": f"Day off: {standing} {day:%m/%d}",
+                        }
+                    )
+        for key in sorted(self._recollection_skips):
+            if priest_id in self._recollection_skips[key] and date.fromisoformat(key) >= after:
+                items.append(
+                    {
+                        "kind": "recollection",
+                        "when": key,
+                        "label": f"Recollection: Wednesday {date.fromisoformat(key):%m/%d}",
+                    }
+                )
+        return sorted(items, key=lambda i: i["when"])
+
+    def unskip_scheduled_absence(self, priest_id: str, item: dict[str, Any], triggered_by: str) -> dict[str, Any]:
+        """Undo a skip: the day off / recollection applies again that day."""
+        kind = item.get("kind")
+        if kind == "day_off":
+            key = item["week_start"]
+            week = dict(self._week_day_off_overrides.get(key, {}))
+            if (week.get(priest_id) or {}).get("action") != "skip":
+                raise RotationError("That day off is not skipped.")
+            del week[priest_id]
+            if week:
+                self._week_day_off_overrides[key] = week
+            else:
+                del self._week_day_off_overrides[key]
+            self._log("unskip_week_day_off", triggered_by=triggered_by, priest_id=priest_id, week_start=key)
+        elif kind == "recollection":
+            key = item["when"]
+            ids = [pid for pid in self._recollection_skips.get(key, []) if pid != priest_id]
+            if len(ids) == len(self._recollection_skips.get(key, [])):
+                raise RotationError("That recollection is not skipped.")
+            if ids:
+                self._recollection_skips[key] = ids
+            else:
+                del self._recollection_skips[key]
+            self._log("unskip_recollection", triggered_by=triggered_by, priest_id=priest_id, on_date=key)
+        else:
+            raise RotationError(f"unknown skip kind '{kind}'")
+        self._save()
+        return item
+
     def cover_prompt_was_sent(self, week_start: date, kind: str) -> bool:
         return f"{week_start.isoformat()}:{kind}" in self._cover_prompts_sent
 

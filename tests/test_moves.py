@@ -417,3 +417,32 @@ def test_skipped_day_off_is_marked_in_status(priests_config, state_path, clock):
     assert "skipped" not in _format_status(mgr.current_order())
     mgr.set_week_day_off_override(date(2026, 10, 5), "fr_martin", "skip", triggered_by="test")
     assert "Fr James Martin SJ: Friday (skipped 10/09)" in _format_status(mgr.current_order())
+
+
+def test_unskip_puts_one_skipped_day_off_back(priests_config, state_path, clock):
+    rotation, sc, notifier, rc = _setup(priests_config, state_path)
+    rotation.set_day_off("fr_martin", "Friday", triggered_by="test")
+    rotation.set_week_day_off_override(date(2026, 10, 5), "fr_martin", "skip", triggered_by="test")
+    rotation.set_week_day_off_override(date(2026, 10, 12), "fr_martin", "skip", triggered_by="test")
+    assert not off(rotation, "fr_martin", noon(2026, 10, 9))
+    _say(sc, rotation, rc, notifier, "ME")  # redraw the screen
+    _say(sc, rotation, rc, notifier, "UNSKIP")
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_unskip_which"
+    assert "1. Day off: Friday 10/09" in sc.sent[-1][1]
+    assert "2. Day off: Friday 10/16" in sc.sent[-1][1]
+    _say(sc, rotation, rc, notifier, "2")
+    assert "back on" in sc.sent[-2][1]
+    assert off(rotation, "fr_martin", noon(2026, 10, 16))
+    assert not off(rotation, "fr_martin", noon(2026, 10, 9))  # the other skip is untouched
+    assert [i["when"] for i in rotation.skipped_targets("fr_martin")] == ["2026-10-09"]
+
+
+def test_unskip_with_one_skip_and_with_none(priests_config, state_path, clock):
+    rotation, sc, notifier, rc = _setup(priests_config, state_path)
+    _say(sc, rotation, rc, notifier, "UNSKIP")
+    assert "isn't a skipped day" in sc.sent[-1][1]
+    rotation.set_day_off("fr_martin", "Friday", triggered_by="test")
+    rotation.skip_recollection("fr_martin", date(2026, 10, 14), triggered_by="test")
+    _say(sc, rotation, rc, notifier, "UNSKIP")
+    assert "Wednesday 10/14 recollection is back on" in sc.sent[-2][1]
+    assert rotation.skipped_targets("fr_martin") == []

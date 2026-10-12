@@ -232,6 +232,7 @@ SETTINGS → 5 / AVAILABILITY
              DAY OFF
              RECOLLECTION
              SKIP          ← only if a day off or recollection is listed
+             UNSKIP        ← only if a day off or recollection is currently skipped
 
              ├─ VACATION / AWAY    (lists trips on file first, numbered)
              │    ├─ MM/DD-MM/DD   e.g. 08/20-08/27  → adds a trip
@@ -248,9 +249,11 @@ SETTINGS → 5 / AVAILABILITY
              │    ├─ 1 / 2 / 3 / 4 / 5   (which Wednesday of the month)
              │    └─ NONE or CLEAR
              │
-             └─ SKIP  (or reply 1 / 2 if two items are listed)
-                  ├─ one item listed → that next date is skipped
-                  └─ two items → “Which one?” then 1 or 2
+             ├─ SKIP  (or reply 1 / 2 if two items are listed)
+             │    ├─ one item listed → that next date is skipped
+             │    └─ two items → “Which one?” then 1 or 2
+             │
+             └─ UNSKIP  (puts a skipped day back; “Which one?” if several)
 ```
 
 Also always: `HELP` (stay in menu), `CANCEL` (leave, save nothing).
@@ -270,6 +273,9 @@ Which Wednesday of each month (1st–5th). If a month has no 5th Wednesday, that
 
 **SKIP**  
 Stay on the line for **one upcoming** day off **or** one upcoming recollection. Next week / next month the rule applies again. Vacation cannot be skipped this way.
+
+**UNSKIP**  
+Puts a skipped day off or recollection back, so it applies again that day. The screen lists skipped days (“Skipped (staying on the line): …”) and offers UNSKIP only when there is one; with several, the bot asks which (reply with the number). Only upcoming skipped days are listed.
 
 **Finished with …? (Y/N).** Once a change in SETTINGS (add / remove / restore a priest, set order) or in Availability (day off, recollection, skip, trips) is saved, the bot asks **“Finished with Settings? Y/N”** (or **“Finished with availability? Y/N”**, naming the priest if it is someone else's). **N** goes back to that menu so you can make another change (for availability, the same priest); **Y** (or no answer) ends it. Nothing is asked after a cancel, an error, or viewing the audit log.
 
