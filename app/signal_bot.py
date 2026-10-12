@@ -43,7 +43,7 @@ from app.notifier import Notifier
 from app import call_log, doctor, troubleshoot
 from app.ops_journal import journal
 from app.onboarding import LATER_NOTE, NEXT_STEP, STEP_PROMPTS, WELCOME_BACK_TEXT, WELCOME_SETUP
-from app.rc_sync import admit_ring_leg, check_rc_hand_edits, send_welcome
+from app.rc_sync import admit_ring_leg, check_rc_hand_edits, live_ring_view, send_welcome
 from app.ringcentral_client import RingCentralDriver, RingCentralDriverError
 from app.rotation import (
     DELETED_KEEP_DAYS,
@@ -317,7 +317,7 @@ def _notify_new_on_call(
     by_id = {p["id"]: p for p in rotation.current_order()}
     lead = by_id.get(lead_id)
     status = _format_status(
-        rotation.current_order(), rotation.automation_enabled
+        rotation.live_view(), rotation.automation_enabled
     )
     if lead is not None and lead.get("cell_number"):
         signal_client.send([lead["cell_number"]], f"You are now on call.\n\n{status} 🫡")
@@ -513,7 +513,7 @@ def _poll_once(
         elif command == "STATUS":
             signal_client.send(
                 [priest["cell_number"]],
-                _format_status(rotation.current_order(), rotation.automation_enabled),
+                _format_status(live_ring_view(rotation, rc_driver), rotation.automation_enabled),
             )
         elif command == "HELP":
             signal_client.send([priest["cell_number"]], HELP_TEXT)
@@ -2117,7 +2117,7 @@ def _finish_rotation_notices(
     ringing = {p["id"] for p in effective}
     new_lead = effective[0] if effective else None
     status = _format_status(
-        rotation.current_order(), rotation.automation_enabled
+        live_ring_view(rotation, rc_driver), rotation.automation_enabled
     )
     if rc_driver.requires_manual_step:
         status += (

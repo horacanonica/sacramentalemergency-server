@@ -188,7 +188,7 @@ Unknown phone: “isn’t authorized.”
 
 ### `STATUS`
 
-Saved ring order first, names only. If a priest is off the live ring right now, `(inactive)` is printed right after his name, e.g. `2. Fr Bugnini SSPX (inactive)`. Active priests have no extra tag. Then separate lists for day off, vacation/away, and recollection. If automation is off, a banner says so.
+Live ring order (as RingCentral is ringing now), names only, then priests who are off the line. Each off-line priest is tagged, `(inactive)` is printed right after his name, e.g. `2. Fr Bugnini SSPX (inactive)`. Active priests have no extra tag. Then separate lists for day off, vacation/away, and recollection. If automation is off, a banner says so.
 
 ### `ABOUT`
 

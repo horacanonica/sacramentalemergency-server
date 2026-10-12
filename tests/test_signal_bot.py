@@ -103,8 +103,9 @@ def test_status_marks_inactive_after_name(priests_config, state_path):
 
     status_text = signal_client.sent[0][1]
     assert "1. Fr James Martin SJ" in status_text.splitlines()
-    assert "2. Fr Bugnini SSPX (inactive)" in status_text.splitlines()
-    assert "3. Fr Youngtrad FSSP" in status_text.splitlines()
+    # STATUS shows the live ring: ringing priests first, off-line ones after.
+    assert "2. Fr Youngtrad FSSP" in status_text.splitlines()
+    assert "3. Fr Bugnini SSPX (inactive)" in status_text.splitlines()
 
 
 def test_status_lists_schedules_in_separate_sections(priests_config, state_path):

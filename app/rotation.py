@@ -629,6 +629,22 @@ class RotationManager:
             ring_last = self._day_off_skipped(first["id"], ring_day)
         return order[1:] + order[:1] if ring_last else order
 
+    def live_view(self, live_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        """current_order() records re-sequenced to the LIVE ring, for
+        STATUS and the dashboard: ringing priests first, in ring order,
+        then everyone off the line (in saved order). live_ids is the ring
+        read from RingCentral; None means the ring this app would write
+        now (effective_order()). `available_today` is set from who is
+        actually on the ring so the "(inactive)" tag matches it."""
+        records = self.current_order()
+        by_id = {p["id"]: p for p in records}
+        ids = [pid for pid in (live_ids or []) if pid in by_id]
+        if not ids:
+            ids = [p["id"] for p in self.effective_order()]
+        live = set(ids)
+        ordered = [by_id[pid] for pid in ids] + [p for p in records if p["id"] not in live]
+        return [{**p, "available_today": p["id"] in live} for p in ordered]
+
     def sync_lead_notification_state(self) -> str | None:
         """Returns the new effective lead's id if it differs from the
         last time this was called (and records the new value), else

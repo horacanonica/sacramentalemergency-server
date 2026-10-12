@@ -38,6 +38,22 @@ def _digits(phone: str | None) -> str:
     return re.sub(r"\D", "", phone or "")
 
 
+def live_ring_view(rotation: RotationManager, rc_driver: RingCentralDriver | None) -> list[dict[str, Any]]:
+    """Priest records in the order RingCentral is ringing right now
+    (STATUS). Falls back to the ring this app would write when
+    RingCentral cannot be read (manual mode, API error)."""
+    live: list[str] | None = None
+    if rc_driver is not None and not getattr(rc_driver, "requires_manual_step", False):
+        try:
+            phones = rc_driver.read_order()
+            if phones is not None:
+                by_digits = {_digits(p.get("cell_number")): p["id"] for p in rotation.current_order()}
+                live = [by_digits[d] for d in (_digits(ph) for ph in phones) if d in by_digits]
+        except Exception as exc:  # noqa: BLE001 - STATUS must not fail on RingCentral
+            logger.warning("Could not read the live ring for STATUS: %s", exc)
+    return rotation.live_view(live)
+
+
 def _new_priest_id(rotation: RotationManager, name: str, phone: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", re.sub(r"^\s*(fr\.?|father)\s+", "", name.lower())).strip("_")
     base = f"fr_{slug}" if slug else f"fr_{_digits(phone)[-4:]}"

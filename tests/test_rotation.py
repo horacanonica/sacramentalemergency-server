@@ -908,3 +908,24 @@ def test_peer_vacation_cancelled_day_off_rings_last(priests_config, state_path):
     mgr.set_vacation("fr_youngtrad", date(2026, 8, 24), date(2026, 8, 28), triggered_by="test")
     monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
     assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_martin"]
+
+
+def test_live_view_lists_the_ringing_order_first(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_martin", "Monday", triggered_by="test")
+    mgr.set_week_day_off_override(date(2026, 8, 24), "fr_martin", "skip", triggered_by="test")
+    mgr.set_day_off("fr_youngtrad", "Monday", triggered_by="test")
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    import app.rotation as rotation_module
+
+    orig = rotation_module.california_now
+    rotation_module.california_now = lambda: monday
+    try:
+        view = mgr.live_view()
+        assert [p["id"] for p in view] == ["fr_bugnini", "fr_martin", "fr_youngtrad"]
+        assert [p["available_today"] for p in view] == [True, True, False]
+        # An explicit live ring from RingCentral wins over the computed one.
+        view = mgr.live_view(["fr_martin", "fr_bugnini"])
+        assert [p["id"] for p in view][:2] == ["fr_martin", "fr_bugnini"]
+    finally:
+        rotation_module.california_now = orig
