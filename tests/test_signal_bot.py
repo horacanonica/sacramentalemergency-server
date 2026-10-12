@@ -1476,6 +1476,8 @@ def test_set_order_screen_shows_live_ring_when_a_rule_changes_it(priests_config,
     rotation.set_day_off("fr_martin", effective_ring_date().strftime("%A"), triggered_by="test")
     _set_order(signal_client, rotation, rc_driver, notifier)
     text = signal_client.sent[-1][1]
-    assert text.startswith("Saved order (reply numbers refer to this list):\n1. Fr James Martin SJ")
+    assert text.startswith("Saved order:\n1. Fr James Martin SJ")
     assert "Live ring right now" in text
-    assert "3. Fr James Martin SJ (inactive)" in text
+    live = text.split("Live ring right now", 1)[1]
+    # Live list carries the saved numbers: Martin is saved #1 but off the line, so he is last.
+    assert live.index("2. Fr Bugnini SSPX") < live.index("3. Fr Youngtrad FSSP") < live.index("1. Fr James Martin SJ (inactive)")

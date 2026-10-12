@@ -2084,13 +2084,14 @@ def _set_order_prompt(rotation: RotationManager, rc_driver: RingCentralDriver | 
     order = rotation.current_order()
     live = live_ring_view(rotation, rc_driver)
     unchanged = [p["id"] for p in live] == [p["id"] for p in order] and all(p["available_today"] for p in live)
-    lines = ["Current order:" if unchanged else "Saved order (reply numbers refer to this list):"]
+    lines = ["Current order:" if unchanged else "Saved order:"]
     lines += [f"{i}. {p['name']}" for i, p in enumerate(order, start=1)]
     if not unchanged:
         lines.append("")
-        lines.append("Live ring right now (a day off, skipped day off, vacation or today-only order changes it):")
-        for i, p in enumerate(live, start=1):
-            lines.append(f"{i}. {p['name']}" + ("" if p["available_today"] else " (inactive)"))
+        lines.append("Live ring right now (same numbers; a day off, skipped day off, vacation or today-only order changes it):")
+        saved_number = {p["id"]: i for i, p in enumerate(order, start=1)}
+        for p in live:
+            lines.append(f"{saved_number[p['id']]}. {p['name']}" + ("" if p["available_today"] else " (inactive)"))
     example = " ".join(str(i) for i in [*range(2, len(order) + 1), 1]) if len(order) > 1 else "1"
     lines.append("")
     lines.append(

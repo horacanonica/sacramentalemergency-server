@@ -353,7 +353,7 @@ SETTINGS
  │    └─ same tree as [Menu tree: AVAILABILITY](#menu-tree-availability)
  │
  └─ 6  or  ORDER  or  SET ORDER
-      └─ shows the saved order, numbered; if a day off, skipped day off, vacation, recollection or a today-only order changes who rings, also shows the LIVE ring (read from RingCentral)
+      └─ shows the saved order, numbered; if a day off, skipped day off, vacation, recollection or a today-only order changes who rings, also shows the LIVE ring (read from RingCentral) in ring order, each name keeping its saved-order number
            └─ reply with the new order, first to last: numbers (3 1 2) or names (Youngtrad Martin Bugnini)
                 └─ 1 Today only (live ring changes until 8 PM, then the saved order is back)
                    2 Permanent (saved order, until the next ROTATE)   N cancels
