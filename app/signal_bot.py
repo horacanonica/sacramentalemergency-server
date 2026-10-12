@@ -217,6 +217,9 @@ def _format_status(order: list[dict], automation_enabled: bool = True) -> str:
         move = p.get("day_off_move")
         if move:
             line += f" (this week only: {move['weekday']} {_mmdd(move['when'])})"
+        skipped = p.get("day_off_skipped")
+        if skipped:
+            line += f" (skipped {', '.join(_mmdd(d) for d in skipped)})"
         lines.append(line)
 
     lines.append("")

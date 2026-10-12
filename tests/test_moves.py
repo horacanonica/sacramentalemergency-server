@@ -407,3 +407,13 @@ def test_cancel_at_the_finished_question_just_leaves(priests_config, state_path,
     _say(sc, rotation, rc, notifier, "DAY OFF", "Mon", "CANCEL")
     assert rotation.pending_confirmation("fr_martin") is None
     assert rotation.standing_day_off("fr_martin") == "Monday"  # the change was already saved
+
+
+def test_skipped_day_off_is_marked_in_status(priests_config, state_path, clock):
+    from app.signal_bot import _format_status
+
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_martin", "Friday", triggered_by="test")
+    assert "skipped" not in _format_status(mgr.current_order())
+    mgr.set_week_day_off_override(date(2026, 10, 5), "fr_martin", "skip", triggered_by="test")
+    assert "Fr James Martin SJ: Friday (skipped 10/09)" in _format_status(mgr.current_order())

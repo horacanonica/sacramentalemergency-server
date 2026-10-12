@@ -1093,6 +1093,23 @@ class RotationManager:
                     break
         return day_move, rec_move
 
+    def _skipped_day_offs(self, priest_id: str, today: date) -> list[str]:
+        """Upcoming dates (ISO) of his standing day off that are skipped
+        (week skip; today also when a peer's vacation cancelled it), for
+        STATUS."""
+        standing = self._get_availability(priest_id).get("day_off")
+        if not standing:
+            return []
+        found: set[date] = set()
+        for key in self._week_day_off_overrides:
+            if (self._week_day_off_overrides[key].get(priest_id) or {}).get("action") == "skip":
+                day = date.fromisoformat(key) + timedelta(days=WEEKDAY_ORDER.index(standing))
+                if day >= today:
+                    found.add(day)
+        if self._day_off_skipped(priest_id, today):
+            found.add(today)
+        return [d.isoformat() for d in sorted(found)]
+
     def scheduled_skip_targets(self, priest_id: str, after: date | None = None) -> list[dict[str, Any]]:
         """Next skippable day-off and recollection occurrences."""
         after = after or effective_ring_date()
@@ -1581,6 +1598,7 @@ class RotationManager:
             record["vacation"] = upcoming[0] if upcoming else None
             record["day_of_recollection"] = avail.get("day_of_recollection")
             record["day_off_move"], record["recollection_move"] = self._pending_moves(pid, today)
+            record["day_off_skipped"] = self._skipped_day_offs(pid, today)
             record["notifications_muted"] = avail.get("notifications_muted", False)
             # Added through the bot and not yet seen on RingCentral: the
             # driver may create his ring leg, and the 8 PM check must not
