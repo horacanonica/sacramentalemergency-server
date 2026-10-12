@@ -104,6 +104,8 @@ def check_container() -> str | None:
 
 
 def check_dashboard() -> str | None:
+    if (PROJECT / ".dashboard-off").exists():
+        return None  # dashboard switched off on purpose (see docker-compose.override.yml)
     ip = read_env().get("TAILSCALE_IP", "")
     if not ip:
         return "TAILSCALE_IP is missing from .env, so the dashboard can't be checked."
