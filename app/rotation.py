@@ -601,16 +601,33 @@ class RotationManager:
         order = [p for p in self.current_order() if self.is_available(p["id"], at)]
         return self._apply_ring_last(order, effective_ring_date(at))
 
-    @staticmethod
-    def _apply_ring_last(order: list[dict[str, Any]], ring_day: date) -> list[dict[str, Any]]:
-        """Standing weekday rule from config/priests.yaml: a priest with
-        `ring_last_on: [Monday]` who would ring FIRST on that weekday is
-        moved to the end of the live ring, so someone else takes the
-        first call. Only the live ring changes, never the saved order.
-        No effect when he is the only one on the line."""
-        if len(order) < 2 or ring_day.strftime("%A") not in (order[0].get("ring_last_on") or []):
+    def _day_off_skipped(self, priest_id: str, ring_day: date) -> bool:
+        """True when ring_day is nominally his day off (standing day, or
+        this week's one-time move) but it is not taking him off the line:
+        he skipped it, or a peer's vacation cancelled it."""
+        override = self._week_day_off_overrides.get(week_monday(ring_day).isoformat(), {}).get(priest_id)
+        if override and override.get("action") == "move":
+            nominal = ring_day.strftime("%A") == override.get("weekday")
+        else:
+            standing = self._get_availability(priest_id).get("day_off")
+            nominal = bool(standing) and ring_day.strftime("%A") == standing
+        return nominal and not self._day_off_applies(priest_id, self._get_availability(priest_id), ring_day)
+
+    def _apply_ring_last(self, order: list[dict[str, Any]], ring_day: date) -> list[dict[str, Any]]:
+        """A priest who would ring FIRST is moved to the end of the live
+        ring, so someone else takes the first call, when either:
+        - the standing rule `ring_last_on: [Monday]` in config/priests.yaml
+          names this weekday, or
+        - this is his day off but he skipped it (stays on the line).
+        Only the live ring changes, never the saved order. No effect when
+        he is the only one on the line."""
+        if len(order) < 2:
             return order
-        return order[1:] + order[:1]
+        first = order[0]
+        ring_last = ring_day.strftime("%A") in (first.get("ring_last_on") or [])
+        if not ring_last and self._automation_enabled:
+            ring_last = self._day_off_skipped(first["id"], ring_day)
+        return order[1:] + order[:1] if ring_last else order
 
     def sync_lead_notification_state(self) -> str | None:
         """Returns the new effective lead's id if it differs from the

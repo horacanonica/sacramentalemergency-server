@@ -886,3 +886,25 @@ def test_adopting_the_shifted_live_ring_does_not_change_saved_order(priests_conf
     # A genuinely different hand-edited ring is still adopted.
     mgr.adopt_live_ring(["fr_youngtrad", "fr_martin", "fr_bugnini"], triggered_by="system-audit")
     assert [p["id"] for p in mgr.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]
+
+
+def test_skipped_day_off_rings_last_on_that_day(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_martin", "Monday", triggered_by="test")
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    tuesday = datetime(2026, 8, 25, 12, 0, tzinfo=CALIFORNIA_TZ)
+    # Day off in effect: he is off the line.
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_youngtrad"]
+    mgr.set_week_day_off_override(date(2026, 8, 24), "fr_martin", "skip", triggered_by="test")
+    # Skipped: he is on the line but last, only on his day off.
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_youngtrad", "fr_martin"]
+    assert [p["id"] for p in mgr.effective_order(tuesday)] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]
+    assert [p["id"] for p in mgr.current_order()] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]
+
+
+def test_peer_vacation_cancelled_day_off_rings_last(priests_config, state_path):
+    mgr = make_manager(priests_config, state_path)
+    mgr.set_day_off("fr_martin", "Monday", triggered_by="test")
+    mgr.set_vacation("fr_youngtrad", date(2026, 8, 24), date(2026, 8, 28), triggered_by="test")
+    monday = datetime(2026, 8, 24, 12, 0, tzinfo=CALIFORNIA_TZ)
+    assert [p["id"] for p in mgr.effective_order(monday)] == ["fr_bugnini", "fr_martin"]
