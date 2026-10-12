@@ -798,8 +798,8 @@ def test_settings_add_priest_yes_saves(priests_config, state_path):
     assert "Fr. Smith" in names
     smith = next(p for p in rotation.current_order() if p["name"] == "Fr. Smith")
     assert smith["cell_number"] == "+19165559999"
-    assert "Saved" in signal_client.sent[-2][1]
-    assert "can text the bot" in signal_client.sent[-2][1]
+    assert "Saved" in signal_client.sent[-1][1]
+    assert "can text the bot" in signal_client.sent[-1][1]
 
     signal_client.queue_incoming("+19165559999", "STATUS")
     _poll_once(signal_client, rotation, rc_driver, notifier)
@@ -868,8 +868,8 @@ def test_settings_remove_priest_yes_removes(priests_config, state_path):
 
     ids = [p["id"] for p in rotation.current_order()]
     assert "fr_bugnini" not in ids
-    assert "has been deleted" in signal_client.sent[-2][1]
-    assert "can no longer text the bot" in signal_client.sent[-2][1]
+    assert "has been deleted" in signal_client.sent[-1][1]
+    assert "can no longer text the bot" in signal_client.sent[-1][1]
 
     signal_client.queue_incoming(NUM_BUGNINI, "STATUS")
     _poll_once(signal_client, rotation, rc_driver, notifier)
@@ -1121,7 +1121,7 @@ def test_settings_restore_priest_brings_back_his_schedule(priests_config, state_
     assert back["day_off"] == "Thursday" and back["rc_new"]
     assert rotation.deleted_priests() == []
     assert any(nums == [NUM_BUGNINI] and m.startswith("Welcome back") for nums, m in signal_client.sent)
-    assert "is back in the rotation" in signal_client.sent[-2][1]
+    assert "is back in the rotation" in signal_client.sent[-1][1]
 
 
 def test_settings_restore_with_nothing_deleted(priests_config, state_path):
@@ -1446,15 +1446,11 @@ def test_rotate_and_permanent_order_clear_a_today_only_order(priests_config, sta
     rc_driver = ManualModeDriver()
     _set_order(signal_client, rotation, rc_driver, notifier, "3 1 2", "1")
     assert rotation.has_ring_override_today()
-    signal_client.queue_incoming(NUM_MARTIN, "Y")  # "Finished with Settings?"
-    _poll_once(signal_client, rotation, rc_driver, notifier)
     signal_client.queue_incoming(NUM_MARTIN, "ROTATE")
     _poll_once(signal_client, rotation, rc_driver, notifier)
     assert not rotation.has_ring_override_today()
     assert [p["id"] for p in rotation.effective_order()] == ["fr_bugnini", "fr_youngtrad", "fr_martin"]
     _set_order(signal_client, rotation, rc_driver, notifier, "3 1 2", "1")
-    signal_client.queue_incoming(NUM_MARTIN, "Y")
-    _poll_once(signal_client, rotation, rc_driver, notifier)
     _set_order(signal_client, rotation, rc_driver, notifier, "2 3 1", "2")
     assert not rotation.has_ring_override_today()
     assert [p["id"] for p in rotation.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]

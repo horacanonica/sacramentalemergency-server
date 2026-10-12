@@ -277,7 +277,9 @@ Stay on the line for **one upcoming** day off **or** one upcoming recollection. 
 **UNSKIP**  
 Puts a skipped day off or recollection back, so it applies again that day. The screen lists skipped days (“Skipped (staying on the line): …”) and offers UNSKIP only when there is one; with several, the bot asks which (reply with the number). Only upcoming skipped days are listed.
 
-**Finished with …? (Y/N).** Once a change in SETTINGS (add / remove / restore a priest, set order) or in Availability (day off, recollection, skip, trips) is saved, the bot asks **“Finished with Settings? Y/N”** (or **“Finished with availability? Y/N”**, naming the priest if it is someone else's). **N** goes back to that menu so you can make another change (for availability, the same priest); **Y** (or no answer) ends it. Nothing is asked after a cancel, an error, or viewing the audit log.
+**Finished with availability? (Y/N).** Once a change in Availability (day off, recollection, skip, trips) is saved, the bot asks **“Finished with availability? Y/N”** (naming the priest if it is someone else's). **N** goes back to that menu so you can make another change for the same priest; **Y** (or no answer) ends it. Settings changes (add / remove / restore a priest, set order) just end the menu. Nothing is asked after a cancel, an error, or viewing the audit log.
+
+**Shortcuts without the menu:** `FIRST <name>` (today only, Y/N), `SKIP`, `UNSKIP`, and `AWAY MM/DD-MM/DD` (or `AWAY` to see your trips) work for yourself straight from a text.
 
 If you change **another** priest, they get a direct text (even if muted).
 
@@ -372,6 +374,11 @@ Everything a priest can text, with Y/N answers shown as their own branches. (The
 ANY TIME (no menu open)
 ├─ ROTATE            moves #1 to the back; clears a today-only order; texts everyone
 ├─ STATUS            live ring, then day off (skipped days marked), vacation, recollection
+├─ FIRST <name>      put him first TODAY ONLY (back to normal at 8 PM), others keep their order
+│       ├─ Y   applies, pushes RingCentral, texts everyone like ROTATE
+│       └─ N   unchanged   (a priest who is off the line today can't be put first)
+├─ SKIP / UNSKIP     your own next day off / recollection (asks "which?" if two); same as Availability
+├─ AWAY 10/20-10/27  adds a trip for yourself (AWAY alone lists your trips, REMOVE n cancels one)
 ├─ DISABLE / ENABLE  global automatic day-off/vacation/recollection switching off / on
 ├─ CALLS             last 3 calls (24 h)
 │   ├─ CALLS ALL        every call in 24 h
@@ -419,9 +426,9 @@ AVAILABILITY  (screen lists: automatic time off, skipped days, trips)
         │       └─ N (or DONE)                  "Done. Trips on file ..."
         └─ REMOVE <n>      cancels trip n
 
-AFTER ANY SAVED CHANGE in Settings/Availability:  "Finished with Settings? / availability?"
+AFTER A SAVED CHANGE in Availability (not Settings, which just ends):  "Finished with availability?"
 ├─ Y  (or YES, DONE, FINISHED)   all done
-├─ N  (or NO)                    back to that menu (same priest for Availability)
+├─ N  (or NO)                    back to the Availability screen (same priest)
 └─ SETTINGS                      jump to the Settings menu
 
 TROUBLESHOOT -> 1-6 (or CANCEL)

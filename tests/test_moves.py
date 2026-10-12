@@ -377,16 +377,15 @@ def test_finished_is_not_asked_when_nothing_was_saved(priests_config, state_path
     assert not any(m.startswith("Finished with") for _, m in sc.sent)
 
 
-def test_finished_in_settings_returns_to_the_settings_menu(priests_config, state_path, clock):
+def test_settings_changes_do_not_ask_finished(priests_config, state_path, clock):
     rotation = make_manager(priests_config, state_path)
     sc = FakeSignalClient()
     notifier = make_notifier(sc)
     rc = ManualModeDriver()
     _say(sc, rotation, rc, notifier, "SETTINGS", "1", "Fr. Smith", "9165559999", "Y")
-    assert sc.sent[-1][1] == "Finished with Settings? Y/N"
-    _say(sc, rotation, rc, notifier, "N")
-    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_settings"
-    assert sc.sent[-1][1].startswith("Settings:")
+    assert "Finished" not in sc.sent[-1][1]
+    assert "Saved" in sc.sent[-1][1]
+    assert rotation.pending_confirmation("fr_martin") is None
 
 
 def test_settings_typed_at_the_finished_question_opens_settings(priests_config, state_path, clock):
@@ -446,3 +445,72 @@ def test_unskip_with_one_skip_and_with_none(priests_config, state_path, clock):
     _say(sc, rotation, rc, notifier, "UNSKIP")
     assert "Wednesday 10/14 recollection is back on" in sc.sent[-2][1]
     assert rotation.skipped_targets("fr_martin") == []
+
+
+# ------------------------------------------------ top-level shortcuts: FIRST, SKIP, UNSKIP, AWAY
+
+
+def _cmd(*texts):
+    return texts
+
+
+def test_first_puts_a_priest_first_today_only_after_yes(priests_config, state_path, clock):
+    rotation = make_manager(priests_config, state_path)  # Martin, Bugnini, Youngtrad
+    sc = FakeSignalClient()
+    notifier = make_notifier(sc)
+    rc = ManualModeDriver()
+    _say(sc, rotation, rc, notifier, "FIRST Youngtrad")
+    assert "Put Fr Youngtrad FSSP first today only" in sc.sent[-1][1]
+    assert rotation.pending_confirmation("fr_martin")["type"] == "first_confirm"
+    assert not rotation.has_ring_override_today()
+    _say(sc, rotation, rc, notifier, "Y")
+    assert [p["id"] for p in rotation.effective_order()][0] == "fr_youngtrad"
+    assert [p["id"] for p in rotation.current_order()] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]  # saved untouched
+
+
+def test_first_no_unknown_already_first_and_off_the_line(priests_config, state_path, clock):
+    rotation = make_manager(priests_config, state_path)
+    sc = FakeSignalClient()
+    notifier = make_notifier(sc)
+    rc = ManualModeDriver()
+    _say(sc, rotation, rc, notifier, "FIRST Youngtrad", "N")
+    assert "unchanged" in sc.sent[-1][1] and not rotation.has_ring_override_today()
+    _say(sc, rotation, rc, notifier, "FIRST Nobody")
+    assert "Didn't recognize" in sc.sent[-1][1]
+    _say(sc, rotation, rc, notifier, "FIRST")
+    assert "Text FIRST and a name" in sc.sent[-1][1]
+    _say(sc, rotation, rc, notifier, "FIRST Martin")
+    assert "already first" in sc.sent[-1][1]
+    rotation.set_day_off("fr_bugnini", "Wednesday", triggered_by="test")  # clock: Wed 10/7
+    _say(sc, rotation, rc, notifier, "FIRST Bugnini")
+    assert "off the line" in sc.sent[-1][1]
+
+
+def test_skip_and_unskip_shortcuts_for_yourself(priests_config, state_path, clock):
+    rotation = make_manager(priests_config, state_path)
+    sc = FakeSignalClient()
+    notifier = make_notifier(sc)
+    rc = ManualModeDriver()
+    rotation.set_day_off("fr_martin", "Friday", triggered_by="test")
+    _say(sc, rotation, rc, notifier, "SKIP")
+    assert "stay on the line" in sc.sent[-1][1]
+    assert [i["when"] for i in rotation.skipped_targets("fr_martin")] == ["2026-10-09"]
+    _say(sc, rotation, rc, notifier, "UNSKIP")
+    assert "back on" in sc.sent[-1][1]
+    assert rotation.skipped_targets("fr_martin") == []
+    _say(sc, rotation, rc, notifier, "UNSKIP")
+    assert "isn't a skipped day" in sc.sent[-1][1]
+
+
+def test_away_shortcut_adds_a_trip_without_more_questions(priests_config, state_path, clock):
+    rotation = make_manager(priests_config, state_path)
+    sc = FakeSignalClient()
+    notifier = make_notifier(sc)
+    rc = ManualModeDriver()
+    _say(sc, rotation, rc, notifier, "AWAY 10/20-10/27")
+    assert "vacation is set from 10/20 to 10/27" in sc.sent[-1][1]
+    assert rotation.pending_confirmation("fr_martin") is None
+    _say(sc, rotation, rc, notifier, "AWAY banana")
+    assert "Didn't recognize those dates" in sc.sent[-1][1]
+    _say(sc, rotation, rc, notifier, "AWAY")
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_vacation"

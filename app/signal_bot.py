@@ -64,6 +64,9 @@ HELP_TEXT = (
     "Sacramental Emergency Line bot (Signal Messenger only):\n"
     "ROTATE - move the current lead priest to the back of the line\n"
     "STATUS - show the current ring order\n"
+    "FIRST <name> - put that priest first on the line today only (back to normal at 8 PM)\n"
+    "SKIP / UNSKIP - stay on the line for your next day off (or recollection) / put it back\n"
+    "AWAY 10/20-10/27 - add a trip for yourself (AWAY alone lists your trips)\n"
     "DISABLE / ENABLE - turn automatic day-off/vacation/recollection disabling off/on for everyone\n"
     "SETTINGS - availability, set the order, add, remove or restore a priest, audit log\n"
     "TROUBLESHOOT - something's wrong? Checks and fixes common problems, or sends a report\n"
@@ -490,6 +493,8 @@ def _poll_once(
                 changes_before = rotation.change_count
                 _handle_menu_pending(text, priest, pending, ptype, signal_client, rotation, rc_driver, notifier)
                 _ask_if_finished(priest, pending, ptype, changes_before, signal_client, rotation)
+            elif ptype == "first_confirm":
+                _handle_first_confirm(text, priest, pending, rotation, rc_driver, notifier)
             elif ptype == "menu_set_order_confirm":
                 changes_before = rotation.change_count
                 _handle_set_order_confirm(text, priest, pending, rotation, rc_driver, notifier)
@@ -530,6 +535,13 @@ def _poll_once(
         elif command == "SETTINGS":
             rotation.set_pending_confirmation(priest["id"], {"type": "menu_settings"})
             signal_client.send([priest["cell_number"]], SETTINGS_MENU_TEXT)
+        elif command == "FIRST" or command.startswith("FIRST "):
+            _handle_first(text[5:], priest, rotation, signal_client)
+        elif command in ("SKIP", "UNSKIP"):
+            carry = {"target_priest_id": priest["id"], "target_priest_name": priest["name"]}
+            _handle_menu_availability(command, priest, carry, signal_client, rotation)
+        elif command in ("AWAY", "VACATION") or command.startswith(("AWAY ", "VACATION ")):
+            _handle_away_shortcut(text.split(None, 1)[1] if " " in text.strip() else "", priest, signal_client, rotation)
         elif command == "HISTORY":  # old name for CALLS, not shown in HELP
             _handle_calls("CALLS", priest, rotation, signal_client)
         elif command == "CALLS" or command.startswith("CALLS "):
@@ -728,9 +740,10 @@ def _ask_if_finished(
     priest: dict, pending: dict, ptype: str, changes_before: int, signal_client: SignalClient,
     rotation: RotationManager,
 ) -> None:
-    """After a Settings / Availability reply that saved something and ended
+    """After an Availability reply that saved something and ended
     the conversation, ask "Finished with ...? Y/N" instead of dropping the
-    priest out of the menu. N goes back to that menu. (Nothing is asked
+    priest out of the menu. N goes back to that menu. (Settings changes
+    no longer ask.) (Nothing is asked
     after a cancel, an error, or a plain "view".) Finishing a trip list
     (N to "Add another trip?") counts: the trips were saved earlier."""
     if ptype == "menu_finished" or rotation.pending_confirmation(priest["id"]) is not None:
@@ -747,9 +760,7 @@ def _ask_if_finished(
         )
         who = "availability" if target_id == priest["id"] else f"{target_name}'s availability"
         signal_client.send([priest["cell_number"]], f"Finished with {who}? Y/N")
-    elif ptype in _SETTINGS_MENU_TYPES:
-        rotation.set_pending_confirmation(priest["id"], {"type": "menu_finished", "branch": "settings"})
-        signal_client.send([priest["cell_number"]], "Finished with Settings? Y/N")
+    # Settings changes (add / remove / restore / set order) are single steps: no question, the menu just ends.
 
 
 def _handle_menu_finished(
@@ -2163,6 +2174,94 @@ def _handle_menu_set_order(
     signal_client.send([priest["cell_number"]], "\n".join(lines))
 
 
+def _handle_first(
+    arg: str, priest: dict, rotation: RotationManager, signal_client: SignalClient
+) -> None:
+    """FIRST <name>: put that priest first on the live ring for today only
+    (until 8 PM); everyone else keeps their current live order."""
+    cell = [priest["cell_number"]]
+    roster = rotation.current_order()
+    if not arg.strip():
+        signal_client.send(cell, "Text FIRST and a name, e.g. FIRST " + roster[0]["name"].split()[-1] + ".")
+        return
+    match = _match_priest_by_name(arg, roster)
+    if match is None:
+        signal_client.send(cell, "Didn't recognize that name. Priests: " + ", ".join(p["name"] for p in roster) + ".")
+        return
+    if match == "AMBIGUOUS":
+        signal_client.send(cell, "That matches more than one priest - use more of the name.")
+        return
+    live = rotation.live_view()
+    target = next(p for p in live if p["id"] == match)
+    if not target["available_today"]:
+        signal_client.send(
+            cell,
+            f"{target['name']} is off the line right now (day off, vacation or recollection), so he can't be first. "
+            "For a day off, SKIP (for yourself) or SETTINGS > 5 Availability puts him back on the line.",
+        )
+        return
+    if live[0]["id"] == match:
+        signal_client.send(cell, f"{target['name']} is already first on the line.")
+        return
+    new_order = [match] + [p["id"] for p in live if p["id"] != match]
+    ringing = [target] + [p for p in live if p["id"] != match and p["available_today"]]
+    rotation.set_pending_confirmation(
+        priest["id"], {"type": "first_confirm", "new_order": new_order, "target_priest_name": target["name"]}
+    )
+    lines = [f"Put {target['name']} first today only? Back to the normal order at 8 PM.", "The line would ring:"]
+    lines += [f"{i}. {p['name']}" for i, p in enumerate(ringing, start=1)]
+    lines.append("Y/N")
+    signal_client.send(cell, "\n".join(lines))
+
+
+def _handle_first_confirm(
+    text: str,
+    priest: dict,
+    pending: dict,
+    rotation: RotationManager,
+    rc_driver: RingCentralDriver,
+    notifier: Notifier,
+) -> None:
+    reply = text.strip().upper()
+    if reply in ("N", "NO"):
+        rotation.pop_pending_confirmation(priest["id"])
+        notifier.signal_client.send([priest["cell_number"]], "Okay, order unchanged.")
+        return
+    if reply not in ("Y", "YES"):
+        notifier.signal_client.send(
+            [priest["cell_number"]], f"Put {pending['target_priest_name']} first today only? Reply Y or N."
+        )
+        return
+    _apply_new_order(priest, pending["new_order"], True, rotation, rc_driver, notifier, reason="FIRST command")
+
+
+def _handle_away_shortcut(
+    arg: str, priest: dict, signal_client: SignalClient, rotation: RotationManager
+) -> None:
+    """AWAY MM/DD-MM/DD adds a trip for the sender; AWAY alone opens his trip list."""
+    cell = [priest["cell_number"]]
+    if not arg.strip():
+        rotation.set_pending_confirmation(
+            priest["id"], {"type": "menu_vacation", "target_priest_id": priest["id"], "target_priest_name": priest["name"]}
+        )
+        signal_client.send(cell, _vacation_prompt(rotation, priest["id"], priest["id"], priest["name"]))
+        return
+    parsed = _parse_vacation_range(arg)
+    if parsed is None:
+        signal_client.send(cell, "Didn't recognize those dates. Text e.g. AWAY 08/20-08/27, or AWAY alone to see your trips.")
+        return
+    start, end = parsed
+    try:
+        trip = rotation.add_vacation(priest["id"], start, end, triggered_by=f"signal:{priest['name']}", reason="AWAY command")
+    except RotationError as exc:
+        signal_client.send(cell, f"Couldn't set that: {exc}")
+        return
+    joined = ""
+    if (trip["start"], trip["end"]) != (start.isoformat(), end.isoformat()):
+        joined = " (joined with the trip already on file)"
+    signal_client.send(cell, f"Your vacation is set from {_mmdd(trip['start'])} to {_mmdd(trip['end'])}{joined}.")
+
+
 def _handle_set_order_confirm(
     text: str,
     priest: dict,
@@ -2187,18 +2286,31 @@ def _handle_set_order_confirm(
     else:
         signal_client.send([priest["cell_number"]], "Reply 1 (today only), 2 (permanent), or N to cancel.")
         return
+    _apply_new_order(priest, pending["new_order"], today_only, rotation, rc_driver, notifier)
+
+
+def _apply_new_order(
+    priest: dict,
+    new_order: list[str],
+    today_only: bool,
+    rotation: RotationManager,
+    rc_driver: RingCentralDriver,
+    notifier: Notifier,
+    reason: str = "set order via Signal",
+) -> None:
+    """Save a new order (permanent) or a today-only live ring, push it to
+    RingCentral, and text everyone like ROTATE."""
+    signal_client = notifier.signal_client
     rotation.pop_pending_confirmation(priest["id"])
     sender_name = priest["name"]
     previous_lead_id = rotation.last_notified_lead_id
     try:
         if today_only:
             rotation.set_ring_override_today(
-                pending["new_order"], triggered_by=f"signal:{sender_name}", reason="set order via Signal (today only)"
+                new_order, triggered_by=f"signal:{sender_name}", reason=f"{reason} (today only)"
             )
         else:
-            rotation.manual_override(
-                pending["new_order"], triggered_by=f"signal:{sender_name}", reason="set order via Signal"
-            )
+            rotation.manual_override(new_order, triggered_by=f"signal:{sender_name}", reason=reason)
     except RotationError as exc:
         signal_client.send([priest["cell_number"]], f"Couldn't set that order: {exc}")
         return
