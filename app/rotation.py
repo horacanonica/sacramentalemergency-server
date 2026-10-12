@@ -230,6 +230,10 @@ class RotationManager:
     # standing setting is untouched and applies again the next month.
     _recollection_month_overrides: dict[str, dict[str, int]] = field(default_factory=dict, init=False)
     _cover_prompts_sent: dict[str, str] = field(default_factory=dict, init=False)
+    # Today-only manual ring order ({"day": ring day ISO, "order": [ids]}):
+    # reorders the LIVE ring for that ring day, then lapses at 8 PM. The
+    # saved order is untouched.
+    _ring_override: dict[str, Any] | None = field(default=None, init=False)
     _failsafe_active: bool = field(default=False, init=False)
     _signal_down_alerted: bool = field(default=False, init=False)
     # Counts logged changes in this process (not saved). The Signal menus
@@ -323,6 +327,12 @@ class RotationManager:
                 for key, moves in (state.get("recollection_month_overrides") or {}).items()
             }
             self._cover_prompts_sent = state.get("cover_prompts_sent", {})
+            override = state.get("ring_override")
+            self._ring_override = (
+                {"day": override["day"], "order": list(override["order"])}
+                if override and override.get("day") and override.get("order")
+                else None
+            )
             self._failsafe_active = bool(state.get("failsafe_active", False))
             self._signal_down_alerted = bool(state.get("signal_down_alerted", False))
             self._last_rc_check = state.get("last_rc_check")
@@ -349,6 +359,7 @@ class RotationManager:
             self._recollection_skips = {}
             self._recollection_month_overrides = {}
             self._cover_prompts_sent = {}
+            self._ring_override = None
             self._failsafe_active = False
             self._signal_down_alerted = False
             self._last_rc_check = None
@@ -375,6 +386,7 @@ class RotationManager:
             "recollection_skips": self._recollection_skips,
             "recollection_month_overrides": self._recollection_month_overrides,
             "cover_prompts_sent": self._cover_prompts_sent,
+            "ring_override": self._ring_override,
             "failsafe_active": self._failsafe_active,
             "signal_down_alerted": self._signal_down_alerted,
             "last_rc_check": self._last_rc_check,
@@ -599,7 +611,39 @@ class RotationManager:
         the listed day. This is what gets pushed to RingCentral."""
         at = california_now() if on_date is None else on_date
         order = [p for p in self.current_order() if self.is_available(p["id"], at)]
-        return self._apply_ring_last(order, effective_ring_date(at))
+        ring_day = effective_ring_date(at)
+        override = self._ring_override
+        if override and override["day"] == ring_day.isoformat():
+            rank = {pid: i for i, pid in enumerate(override["order"])}
+            # Stable sort: anyone the override does not name keeps saved order, after the named ones.
+            return sorted(order, key=lambda p: rank.get(p["id"], len(rank)))
+        return self._apply_ring_last(order, ring_day)
+
+    def set_ring_override_today(self, new_order: list[str], triggered_by: str, reason: str = "") -> None:
+        """Manual live ring order for today only (until 8 PM). Saved order untouched."""
+        if set(new_order) != set(self._order) or len(new_order) != len(self._order):
+            raise RotationError("The order must list every priest exactly once.")
+        self._ring_override = {"day": effective_ring_date().isoformat(), "order": list(new_order)}
+        self._log(
+            "ring_override_today",
+            triggered_by=triggered_by,
+            reason=reason,
+            day=self._ring_override["day"],
+            order=list(new_order),
+        )
+        self._save()
+
+    def has_ring_override_today(self) -> bool:
+        return bool(self._ring_override and self._ring_override["day"] == effective_ring_date().isoformat())
+
+    def clear_ring_override(self, triggered_by: str, reason: str = "") -> bool:
+        """Drop any today-only order. True if there was one."""
+        if self._ring_override is None:
+            return False
+        self._ring_override = None
+        self._log("ring_override_cleared", triggered_by=triggered_by, reason=reason)
+        self._save()
+        return True
 
     def _day_off_skipped(self, priest_id: str, ring_day: date) -> bool:
         """True when ring_day is nominally his day off (standing day, or
@@ -1757,6 +1801,7 @@ class RotationManager:
             )
         before = list(self._order)
         self._order = list(new_order)
+        self._ring_override = None  # a permanent order supersedes a today-only one
         self._log(
             "manual_override",
             triggered_by=triggered_by,

@@ -353,9 +353,11 @@ SETTINGS
  │    └─ same tree as [Menu tree: AVAILABILITY](#menu-tree-availability)
  │
  └─ 6  or  ORDER  or  SET ORDER
-      └─ shows the current order, numbered
+      └─ shows the saved order, numbered; if a day off, skipped day off, vacation, recollection or a today-only order changes who rings, also shows the LIVE ring (read from RingCentral)
            └─ reply with the new order, first to last: numbers (3 1 2) or names (Youngtrad Martin Bugnini)
-                └─ Confirm Y / N   (Y saves it, updates RingCentral, and texts everyone like ROTATE)
+                └─ 1 Today only (live ring changes until 8 PM, then the saved order is back)
+                   2 Permanent (saved order, until the next ROTATE)   N cancels
+                   Either updates RingCentral and texts everyone like ROTATE. ROTATE or a permanent order drops a today-only one.
 ```
 
 `CANCEL` or 5 minutes of silence leaves any of these without saving.

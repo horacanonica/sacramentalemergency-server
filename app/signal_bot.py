@@ -675,7 +675,7 @@ def _handle_menu_pending(
     elif ptype == "menu_vacation_more":
         _handle_menu_vacation_more(text, priest, pending, signal_client, rotation)
     elif ptype == "menu_settings":
-        _handle_menu_settings(text, priest, signal_client, rotation)
+        _handle_menu_settings(text, priest, signal_client, rotation, rc_driver)
     elif ptype == "menu_add_priest_name":
         _handle_menu_add_priest_name(text, priest, signal_client, rotation)
     elif ptype == "menu_add_priest_cell":
@@ -691,7 +691,7 @@ def _handle_menu_pending(
     elif ptype == "menu_restore_priest_confirm":
         _handle_menu_restore_priest_confirm(text, priest, pending, signal_client, rotation, rc_driver, notifier)
     elif ptype == "menu_set_order":
-        _handle_menu_set_order(text, priest, signal_client, rotation)
+        _handle_menu_set_order(text, priest, signal_client, rotation, rc_driver)
     elif ptype == "menu_finished":
         _handle_menu_finished(text, priest, pending, signal_client, rotation)
 
@@ -1441,7 +1441,13 @@ def _start_availability_menu(
     )
 
 
-def _handle_menu_settings(text: str, priest: dict, signal_client: SignalClient, rotation: RotationManager) -> None:
+def _handle_menu_settings(
+    text: str,
+    priest: dict,
+    signal_client: SignalClient,
+    rotation: RotationManager,
+    rc_driver: RingCentralDriver | None = None,
+) -> None:
     reply = text.strip().upper()
     if reply in ("1", "ADD", "ADD PRIEST"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_add_priest_name"})
@@ -1466,7 +1472,7 @@ def _handle_menu_settings(text: str, priest: dict, signal_client: SignalClient, 
         _start_availability_menu(priest, signal_client, rotation)
     elif reply in ("6", "ORDER", "SET ORDER"):
         rotation.set_pending_confirmation(priest["id"], {"type": "menu_set_order"})
-        signal_client.send([priest["cell_number"]], _set_order_prompt(rotation))
+        signal_client.send([priest["cell_number"]], _set_order_prompt(rotation, rc_driver))
     else:
         signal_client.send([priest["cell_number"]], SETTINGS_MENU_TEXT)
 
@@ -2048,6 +2054,8 @@ def _handle_rotate(
 ) -> None:
     previous_lead_id = rotation.last_notified_lead_id
     try:
+        # A today-only order would hide the rotation's effect on the live ring.
+        rotation.clear_ring_override(triggered_by=f"signal:{sender_name}", reason="ROTATE")
         new_order = rotation.rotate(triggered_by=f"signal:{sender_name}", reason="manual trigger via Signal")
     except RotationError as exc:
         logger.exception("Rotation failed")
@@ -2069,14 +2077,26 @@ def _handle_rotate(
 
 
 
-def _set_order_prompt(rotation: RotationManager) -> str:
+def _set_order_prompt(rotation: RotationManager, rc_driver: RingCentralDriver | None = None) -> str:
+    """The saved order (the numbers in a reply refer to it) and, whenever a
+    rule changes who rings (day off, skipped day off, vacation, recollection,
+    today-only order), the LIVE ring as RingCentral has it."""
     order = rotation.current_order()
-    lines = ["Current order:"]
+    live = live_ring_view(rotation, rc_driver)
+    unchanged = [p["id"] for p in live] == [p["id"] for p in order] and all(p["available_today"] for p in live)
+    lines = ["Current order:" if unchanged else "Saved order (reply numbers refer to this list):"]
     lines += [f"{i}. {p['name']}" for i, p in enumerate(order, start=1)]
+    if not unchanged:
+        lines.append("")
+        lines.append("Live ring right now (a day off, skipped day off, vacation or today-only order changes it):")
+        for i, p in enumerate(live, start=1):
+            lines.append(f"{i}. {p['name']}" + ("" if p["available_today"] else " (inactive)"))
     example = " ".join(str(i) for i in [*range(2, len(order) + 1), 1]) if len(order) > 1 else "1"
     lines.append("")
     lines.append(
-        f"Reply with the new order using those numbers (e.g. {example}) or names, first to last. CANCEL to leave."
+        f"Reply with the new order using the saved-order numbers (e.g. {example}) or names, first to last. CANCEL to leave."
+        if not unchanged
+        else f"Reply with the new order using those numbers (e.g. {example}) or names, first to last. CANCEL to leave."
     )
     return "\n".join(lines)
 
@@ -2111,23 +2131,34 @@ def _parse_new_order(text: str, order: list[dict]) -> list[str] | None:
     return picked
 
 
-def _handle_menu_set_order(text: str, priest: dict, signal_client: SignalClient, rotation: RotationManager) -> None:
+def _handle_menu_set_order(
+    text: str,
+    priest: dict,
+    signal_client: SignalClient,
+    rotation: RotationManager,
+    rc_driver: RingCentralDriver | None = None,
+) -> None:
     order = rotation.current_order()
     new_ids = _parse_new_order(text, order)
     if new_ids is None:
         signal_client.send(
             [priest["cell_number"]],
-            f"Please list every priest exactly once.\n\n{_set_order_prompt(rotation)}",
+            f"Please list every priest exactly once.\n\n{_set_order_prompt(rotation, rc_driver)}",
         )
         return
-    if new_ids == [p["id"] for p in order]:
+    if new_ids == [p["id"] for p in order] and not rotation.has_ring_override_today():
         rotation.pop_pending_confirmation(priest["id"])
         signal_client.send([priest["cell_number"]], "That is already the order. Nothing changed.")
         return
     names = {p["id"]: p["name"] for p in order}
     rotation.set_pending_confirmation(priest["id"], {"type": "menu_set_order_confirm", "new_order": new_ids})
     lines = ["New order:"] + [f"{i}. {names[pid]}" for i, pid in enumerate(new_ids, start=1)]
-    lines.append("Save it? Reply Y or N.")
+    lines += [
+        "Apply it:",
+        "1. Today only (back to the saved order at 8 PM)",
+        "2. Permanent (until the next ROTATE)",
+        "Reply 1 or 2, or N to cancel.",
+    ]
     signal_client.send([priest["cell_number"]], "\n".join(lines))
 
 
@@ -2139,22 +2170,34 @@ def _handle_set_order_confirm(
     rc_driver: RingCentralDriver,
     notifier: Notifier,
 ) -> None:
-    """Y saves the order (same function as the dashboard's manual
-    override), pushes it to RingCentral, and texts everyone like ROTATE."""
+    """1 = today only (live ring until 8 PM), 2 = permanent (saved order,
+    same function as the dashboard's manual override). Either pushes to
+    RingCentral and texts everyone like ROTATE."""
     signal_client = notifier.signal_client
     reply = text.strip().upper()
     if reply in ("N", "NO"):
         rotation.pop_pending_confirmation(priest["id"])
         signal_client.send([priest["cell_number"]], "Okay, order unchanged.")
         return
-    if reply not in ("Y", "YES"):
-        signal_client.send([priest["cell_number"]], "Save the new order? Reply Y or N.")
+    if reply in ("1", "TODAY", "TODAY ONLY", "ONLY TODAY"):
+        today_only = True
+    elif reply in ("2", "PERMANENT", "PERM", "PERMANENTLY"):
+        today_only = False
+    else:
+        signal_client.send([priest["cell_number"]], "Reply 1 (today only), 2 (permanent), or N to cancel.")
         return
     rotation.pop_pending_confirmation(priest["id"])
     sender_name = priest["name"]
     previous_lead_id = rotation.last_notified_lead_id
     try:
-        rotation.manual_override(pending["new_order"], triggered_by=f"signal:{sender_name}", reason="set order via Signal")
+        if today_only:
+            rotation.set_ring_override_today(
+                pending["new_order"], triggered_by=f"signal:{sender_name}", reason="set order via Signal (today only)"
+            )
+        else:
+            rotation.manual_override(
+                pending["new_order"], triggered_by=f"signal:{sender_name}", reason="set order via Signal"
+            )
     except RotationError as exc:
         signal_client.send([priest["cell_number"]], f"Couldn't set that order: {exc}")
         return

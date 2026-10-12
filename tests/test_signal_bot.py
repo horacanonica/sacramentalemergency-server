@@ -1012,7 +1012,7 @@ def test_set_order_by_numbers_saves_and_tells_everyone(priests_config, state_pat
     assert [p["id"] for p in rotation.current_order()] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]  # not saved yet
 
     signal_client.sent.clear()
-    signal_client.queue_incoming(NUM_MARTIN, "Y")
+    signal_client.queue_incoming(NUM_MARTIN, "2")
     _poll_once(signal_client, rotation, rc_driver, notifier)
     assert [p["id"] for p in rotation.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]
     texts = {nums[0]: msg for nums, msg in signal_client.sent if not msg.startswith("Finished with")}
@@ -1034,7 +1034,7 @@ def test_set_order_by_names(priests_config, state_path):
     signal_client = FakeSignalClient()
     notifier = make_notifier(signal_client)
     rc_driver = ManualModeDriver()
-    _set_order(signal_client, rotation, rc_driver, notifier, "Fr Bugnini SSPX, Youngtrad, martin", "YES")
+    _set_order(signal_client, rotation, rc_driver, notifier, "Fr Bugnini SSPX, Youngtrad, martin", "2")
     assert [p["id"] for p in rotation.current_order()] == ["fr_bugnini", "fr_youngtrad", "fr_martin"]
 
 
@@ -1404,3 +1404,78 @@ def test_unanswered_add_another_trip_question_lapses_quietly(priests_config, sta
     assert rotation.pending_confirmation("fr_martin") is None
     assert signal_client.sent == []
     assert len(rotation.upcoming_vacations("fr_martin")) == 1
+
+
+def test_set_order_asks_today_only_or_permanent(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+    _set_order(signal_client, rotation, rc_driver, notifier, "3 1 2")
+    assert "1. Today only" in signal_client.sent[-1][1]
+    assert "2. Permanent" in signal_client.sent[-1][1]
+    signal_client.queue_incoming(NUM_MARTIN, "Y")  # not an answer to the question
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert "Reply 1" in signal_client.sent[-1][1]
+    assert rotation.pending_confirmation("fr_martin")["type"] == "menu_set_order_confirm"
+
+
+def test_set_order_today_only_reorders_live_ring_but_not_saved_order(priests_config, state_path):
+    from datetime import timedelta
+
+    from app.localtime import california_now, effective_ring_date
+
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+    _set_order(signal_client, rotation, rc_driver, notifier, "3 1 2", "1")
+    assert [p["id"] for p in rotation.current_order()] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]  # saved
+    assert [p["id"] for p in rotation.effective_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]  # live today
+    assert rotation.has_ring_override_today()
+    # It lapses with the next ring day (8 PM).
+    next_ring_day = effective_ring_date() + timedelta(days=1)
+    tomorrow = california_now().replace(year=next_ring_day.year, month=next_ring_day.month, day=next_ring_day.day, hour=12)
+    assert [p["id"] for p in rotation.effective_order(tomorrow)] == ["fr_martin", "fr_bugnini", "fr_youngtrad"]
+
+
+def test_rotate_and_permanent_order_clear_a_today_only_order(priests_config, state_path):
+    rotation = make_manager(priests_config, state_path)
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+    _set_order(signal_client, rotation, rc_driver, notifier, "3 1 2", "1")
+    assert rotation.has_ring_override_today()
+    signal_client.queue_incoming(NUM_MARTIN, "Y")  # "Finished with Settings?"
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    signal_client.queue_incoming(NUM_MARTIN, "ROTATE")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    assert not rotation.has_ring_override_today()
+    assert [p["id"] for p in rotation.effective_order()] == ["fr_bugnini", "fr_youngtrad", "fr_martin"]
+    _set_order(signal_client, rotation, rc_driver, notifier, "3 1 2", "1")
+    signal_client.queue_incoming(NUM_MARTIN, "Y")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+    _set_order(signal_client, rotation, rc_driver, notifier, "2 3 1", "2")
+    assert not rotation.has_ring_override_today()
+    assert [p["id"] for p in rotation.current_order()] == ["fr_youngtrad", "fr_martin", "fr_bugnini"]
+
+
+def test_set_order_screen_shows_live_ring_when_a_rule_changes_it(priests_config, state_path):
+    from app.localtime import effective_ring_date
+
+    rotation = make_manager(priests_config, state_path)  # Martin, Bugnini, Youngtrad
+    signal_client = FakeSignalClient()
+    notifier = make_notifier(signal_client)
+    rc_driver = ManualModeDriver()
+    _set_order(signal_client, rotation, rc_driver, notifier)
+    assert signal_client.sent[-1][1].startswith("Current order:")  # no rule: one list
+    assert "Live ring" not in signal_client.sent[-1][1]
+    signal_client.queue_incoming(NUM_MARTIN, "CANCEL")
+    _poll_once(signal_client, rotation, rc_driver, notifier)
+
+    rotation.set_day_off("fr_martin", effective_ring_date().strftime("%A"), triggered_by="test")
+    _set_order(signal_client, rotation, rc_driver, notifier)
+    text = signal_client.sent[-1][1]
+    assert text.startswith("Saved order (reply numbers refer to this list):\n1. Fr James Martin SJ")
+    assert "Live ring right now" in text
+    assert "3. Fr James Martin SJ (inactive)" in text
