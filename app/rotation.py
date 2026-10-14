@@ -687,7 +687,30 @@ class RotationManager:
             ids = [p["id"] for p in self.effective_order()]
         live = set(ids)
         ordered = [by_id[pid] for pid in ids] + [p for p in records if p["id"] not in live]
-        return [{**p, "available_today": p["id"] in live} for p in ordered]
+        return [
+            {**p, "available_today": p["id"] in live, "off_reason": None if p["id"] in live else self.off_reason(p["id"])}
+            for p in ordered
+        ]
+
+    def off_reason(self, priest_id: str, on_date: date | datetime | None = None) -> str | None:
+        """Why this priest is off the line at on_date (default now): the
+        first rule that takes him off, in the order manual disable,
+        vacation, day of recollection, day off. None when no rule explains
+        it (for example he was switched off by hand in RingCentral)."""
+        at = as_california_datetime(california_now() if on_date is None else on_date)
+        ring_day = effective_ring_date(at)
+        avail = self._get_availability(priest_id)
+        if avail.get("manual_disabled"):
+            return "disabled"
+        if not self._automation_enabled:
+            return None
+        if self._on_vacation(avail, ring_day):
+            return "vacation"
+        if self._is_recollection_active(avail, at, priest_id) and not self._is_recollection_skipped(priest_id, ring_day):
+            return "day of recollection"
+        if self._day_off_applies(priest_id, avail, ring_day):
+            return "day off"
+        return None
 
     def sync_lead_notification_state(self) -> str | None:
         """Returns the new effective lead's id if it differs from the

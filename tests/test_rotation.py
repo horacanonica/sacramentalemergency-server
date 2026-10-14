@@ -929,3 +929,20 @@ def test_live_view_lists_the_ringing_order_first(priests_config, state_path):
         assert [p["id"] for p in view][:2] == ["fr_martin", "fr_bugnini"]
     finally:
         rotation_module.california_now = orig
+
+
+def test_off_reason_names_the_rule(priests_config, state_path):
+    from app.localtime import effective_ring_date
+
+    rotation = make_manager(priests_config, state_path)
+    today = effective_ring_date()
+    ids = [p["id"] for p in rotation.current_order()]
+    assert rotation.off_reason(ids[0]) is None
+    rotation.set_day_off(ids[0], today.strftime("%A"), triggered_by="test")
+    assert rotation.off_reason(ids[0]) == "day off"
+    assert {p["id"]: p for p in rotation.live_view()}[ids[0]]["off_reason"] == "day off"
+    # A peer's vacation cancels the day off, so the reason is now the vacation alone.
+    rotation.add_vacation(ids[1], today, today, triggered_by="test")
+    assert rotation.off_reason(ids[0]) is None
+    assert rotation.off_reason(ids[1]) == "vacation"
+    assert {p["id"]: p for p in rotation.live_view()}[ids[1]]["off_reason"] == "vacation"

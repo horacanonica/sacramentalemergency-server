@@ -105,7 +105,7 @@ def test_status_marks_inactive_after_name(priests_config, state_path):
     assert "1. Fr James Martin SJ" in status_text.splitlines()
     # STATUS shows the live ring: ringing priests first, off-line ones after.
     assert "2. Fr Youngtrad FSSP" in status_text.splitlines()
-    assert "3. Fr Bugnini SSPX (inactive)" in status_text.splitlines()
+    assert "3. Fr Bugnini SSPX (inactive: day off)" in status_text.splitlines()
 
 
 def test_status_lists_schedules_in_separate_sections(priests_config, state_path):
@@ -1476,4 +1476,4 @@ def test_set_order_screen_shows_live_ring_when_a_rule_changes_it(priests_config,
     assert "Live ring right now" in text
     live = text.split("Live ring right now", 1)[1]
     # Live list carries the saved numbers: Martin is saved #1 but off the line, so he is last.
-    assert live.index("2. Fr Bugnini SSPX") < live.index("3. Fr Youngtrad FSSP") < live.index("1. Fr James Martin SJ (inactive)")
+    assert live.index("2. Fr Bugnini SSPX") < live.index("3. Fr Youngtrad FSSP") < live.index("1. Fr James Martin SJ (inactive: day off)")

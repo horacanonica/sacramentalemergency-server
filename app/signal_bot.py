@@ -210,7 +210,8 @@ def _format_status(order: list[dict], automation_enabled: bool = True) -> str:
     for i, p in enumerate(order):
         line = f"{i + 1}. {p['name']}"
         if not p.get("available_today", True):
-            line += " (inactive)"
+            reason = p.get("off_reason")
+            line += f" (inactive: {reason})" if reason else " (inactive)"
         lines.append(line)
 
     lines.append("")
@@ -2102,7 +2103,10 @@ def _set_order_prompt(rotation: RotationManager, rc_driver: RingCentralDriver | 
         lines.append("Live ring right now (same numbers; a day off, skipped day off, vacation or today-only order changes it):")
         saved_number = {p["id"]: i for i, p in enumerate(order, start=1)}
         for p in live:
-            lines.append(f"{saved_number[p['id']]}. {p['name']}" + ("" if p["available_today"] else " (inactive)"))
+            tag = ""
+            if not p["available_today"]:
+                tag = f" (inactive: {p['off_reason']})" if p.get("off_reason") else " (inactive)"
+            lines.append(f"{saved_number[p['id']]}. {p['name']}{tag}")
     example = " ".join(str(i) for i in [*range(2, len(order) + 1), 1]) if len(order) > 1 else "1"
     lines.append("")
     lines.append(

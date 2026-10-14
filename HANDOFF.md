@@ -31,7 +31,7 @@ You can still use `ROTATE` or the dashboard regardless of automation. If someone
 
 **Visits are not counted (since 24 Sep 2026).** There are no year totals, no anointing log, and no automatic "ready to rotate?" question. The order changes only when someone texts `ROTATE` (or uses the dashboard). A text like `2 UC Davis` gets the reply “Visits are no longer tracked. To change who's first, text ROTATE.”
 
-Who is on the live ring depends on the day: on **Mondays** Youngtrad is off, on **Tuesdays** Martin is off (each from 8:00 PM the evening before). `STATUS` shows `(inactive)` after the name of whoever is off the live ring. Nobody is muted (since 24 Sep 2026), so everyone gets routine texts.
+Who is on the live ring depends on the day: on **Mondays** Youngtrad is off, on **Tuesdays** Martin is off (each from 8:00 PM the evening before). `STATUS` shows `(inactive: day off)` (or vacation, day of recollection, disabled) after the name of whoever is off the live ring. Nobody is muted (since 24 Sep 2026), so everyone gets routine texts.
 
 **Coming up:** **11–13 Oct 2026**, Bugnini is away, which suspends Youngtrad's Monday (12 Oct) and Martin's Tuesday (13 Oct) day-offs that week by default (a peer's vacation overrides everyone else's day off unless they explicitly move or skip it) — both get a text two days before asking whether to skip or move that week's day off. **19–23 Oct 2026**, Martin is away, which suspends Youngtrad's Monday (19 Oct) the same way; Martin has already skipped his 21 Oct recollection, which falls inside the trip. The app never lets a change like this leave nobody on the line.
 
@@ -188,7 +188,7 @@ Unknown phone: “isn’t authorized.”
 
 ### `STATUS`
 
-Live ring order (as RingCentral is ringing now), names only, then priests who are off the line. Each off-line priest is tagged, `(inactive)` is printed right after his name, e.g. `2. Fr Bugnini SSPX (inactive)`. Active priests have no extra tag. Then separate lists for day off (a skipped day off is marked, e.g. `Monday (skipped 10/12)`), vacation/away, and recollection. If automation is off, a banner says so.
+Live ring order (as RingCentral is ringing now), names only, then priests who are off the line. Each off-line priest is tagged with the reason, printed right after his name, e.g. `2. Fr Bugnini SSPX (inactive: day of recollection)` (also vacation, day off, disabled; plain `(inactive)` if no rule explains it). Active priests have no extra tag. Then separate lists for day off (a skipped day off is marked, e.g. `Monday (skipped 10/12)`), vacation/away, and recollection. If automation is off, a banner says so.
 
 ### `ABOUT`
 
