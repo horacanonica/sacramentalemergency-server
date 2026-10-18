@@ -25,7 +25,7 @@ RUN curl -sL https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg 
 
 # --- signal-cli (pinned version; check https://github.com/AsamK/signal-cli/releases
 #     before bumping) ---
-ARG SIGNAL_CLI_VERSION=0.14.8
+ARG SIGNAL_CLI_VERSION=0.14.9
 RUN curl -sL "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" \
     | tar -xz -C /opt \
     && ln -s "/opt/signal-cli-${SIGNAL_CLI_VERSION}/bin/signal-cli" /usr/local/bin/signal-cli
